@@ -1,22 +1,30 @@
-#define POT_1 9
-#define POT_2 11
-#define RELAY 8
+// USER INSTRUCTIONS
+// This code is used to generate a pseudi-random simulation of kiwifruit motion
+// User inputs are sent over Serial 
 
-#define SEED 1234
+// INPUTS
+// Stop motors                      'x'
+// Set Intensity to value N (1-100) 'I N'
 
-// Impulse tuning parameters
+// Simulation characteristic parameters can be tuned and evaluated using the Impulse Mode Tuning spreadsheet
 #define MOTOR1_INPUT_CAP 200
 #define MOTOR2_INPUT_CAP 200
 #define DIMINISHING_STEP 50
 #define DIMINISHING_FACTOR_MIN 0.94
 #define DIMINISHING_FACTOR_MAX 0.98
 
-int intensity = 0;
-
 float IMPULSE_MAX = (intensity+150)/2;
 float IMPULSE_MIN = intensity/3;
 float TIME_DELAY_MIN = 500-(intensity*2);
 float TIME_DELAY_MAX = 1000-(intensity*5);
+
+#define SEED 1234
+
+#define POT_1 9
+#define POT_2 11
+#define RELAY 8
+
+int intensity = 0;
 
 //UI configuration
 #define PRINT_TIME 250
