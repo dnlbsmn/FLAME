@@ -1,3 +1,14 @@
+// USER INSTRUCTIONS
+// This code is used to control the frequency and phase of each disturbance generator
+// User inputs are sent over Serial 
+
+// INPUTS
+// Stop motors                      'x'
+// Set motor 1 frequency N (Hz)     'm1 N'
+// Set motor 2 frequency N (Hz)     'm2 N'
+// Set both motors frequency N (Hz) 'm3 N'
+// Set Phase Offset N (Degrees)     'po N'
+
 //Connections
 #define POT_1 9
 #define B_1 2
