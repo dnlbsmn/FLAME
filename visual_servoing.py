@@ -47,19 +47,28 @@ def image_receive(image, system):
 
     # So long as a kiwifruit has been detected convert to global and send to the motion prediction algorithm
     if kiwifruits != []:
-        kiwifruit = arm.extract_target(kiwifruits, image_time)
+        kiwifruit = arm.locate_nearest(kiwifruits, image_time)
         arm.publish_target(kiwifruit, image_time)
 
 # The thread to record the TCP poses constantly
 def record_tcp(arm: ur_five):
-    while True:
+    global running
+
+    while running:
         arm.receive_tcp_pose()
         time.sleep(0.01)
+
+# The function that initialises the shutdown
+def end_program():
+    global running
+    running = 0
 
 ### ================================ ###
 # THE MAIN WORKFLOW OF THE SYSTEM
 
 if __name__ == '__main__':
+    running = 1
+
     carl = realsense()
     jerry = ur_five()
     
@@ -67,5 +76,7 @@ if __name__ == '__main__':
 
     tcp_recorder = threading.Thread(target = record_tcp, args = (jerry, ))
     tcp_recorder.start()
+
+    rospy.on_shutdown(end_program)
 
     rospy.spin()

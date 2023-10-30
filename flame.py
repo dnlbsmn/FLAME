@@ -57,10 +57,10 @@ class ur_five:
 
     # Connect to the UR5 robot
     def connect(self):
-        ROBOT_HOST = '192.168.10.20'
+        robot_host = '192.168.10.20'
         config_filename = 'rtdeCommand.xml'
 
-        self.rtde = rtdeState.RtdeState(ROBOT_HOST, config_filename)
+        self.rtde = rtdeState.RtdeState(robot_host, config_filename)
 
         self.rtde.initialize()
 
@@ -78,22 +78,19 @@ class ur_five:
 
         # Iterate through all the tcp readings until one is later than the desired time
         for tcp in self.tcps:
-            if tcp != 0:
-                if tcp[1] < pose_time:
+            if (tcp != 0):
+                if (tcp[1] < pose_time):
                     self.actual_tcp = tcp[0]
                     too_early = 0
                     break
 
-        # print("image time: " + str(pose_time))
-        # print("  tcp time: " + str(tcp[1]))
-
         # If no matching tcp pose was found in memory
         if too_early:
-            print("TCP memory does not go that far back")
+            print("No valid TCP pose was found")
             return
 
         # Update the position of the realsense to match the tcp
-        self.update_realsense_pose()
+        # self.update_realsense_pose()
 
     # Appends the current pose of the UR5 to the array of poses
     def receive_tcp_pose(self):
@@ -117,17 +114,13 @@ class ur_five:
         # Append the most recent reading to the start of the list
         self.tcps[0] = [tcp, time_stamp]
 
-    # Refreshes the realsense pose according to the current TCP pose
+    '''# Refreshes the realsense pose according to the current TCP pose
     def update_realsense_pose(self):
         rotated = self.rotate_point(self.realsense_offset[0:2], self.actual_tcp[5])
 
         self.realsense[0] = self.actual_tcp[0] + rotated[0]
         self.realsense[1] = self.actual_tcp[1] + rotated[1]
-        self.realsense[2] = self.actual_tcp[2] + self.realsense_offset[2]
-
-        # print("RSC X: " + str(round(self.realsense[0] * 1000)), end=" mm ")
-        # print("Y: " + str(round(self.realsense[1] * 1000)), end=" mm ")
-        # print("Z: " + str(round(self.realsense[2] * 1000)), end=" mm\n")
+        self.realsense[2] = self.actual_tcp[2] + self.realsense_offset[2]'''
 
     # Updates all the variables of the code to match that of the actual UR5
     def update_state(self):
@@ -141,12 +134,12 @@ class ur_five:
         self.actual_tcp[4] = state.actual_TCP_pose[4]
         self.actual_tcp[5] = state.actual_TCP_pose[5]
 
-        # Read the next state variable
+        # Read the state variable from the UR5
         self.pick_state = state.output_int_register_0
 
     ### CALLBACK FUNCTIONS ###
     # Publishes the target to the predictive motion node
-    def publish_target(self, position, position_time):
+    def publish_target(self, position: Point, position_time: float):
         # If the position is empty dont try to send it
         if position == []:
             return
@@ -155,9 +148,9 @@ class ur_five:
         pub_point = Float64MultiArray()
 
         point_data = [0, 0, 0, 0]
-        point_data[0] = position[0]
-        point_data[1] = position[1]
-        point_data[2] = position[2]
+        point_data[0] = position.x
+        point_data[1] = position.y
+        point_data[2] = position.z
         point_data[3] = position_time
 
         pub_point.data = point_data
@@ -166,9 +159,9 @@ class ur_five:
         # Calculates the error of the current target and publishes it to the ros topic
         error = Point()
 
-        error.x = position[0] - self.actual_tcp[0]
-        error.y = position[1] - self.actual_tcp[1]
-        error.z = position[2] - self.actual_tcp[2]
+        error.x = position.x - self.actual_tcp[0]
+        error.y = position.y - self.actual_tcp[1]
+        error.z = position.z - self.actual_tcp[2]
 
         self.error_pub.publish(error)
 
@@ -200,46 +193,38 @@ class ur_five:
 
             # Set the next time which a message should be sent
             self.target_time = time.time() + self.delay_time
-
-            # print("X: " + str(round(target[0] * 1000)), end=" mm ")
-            # print("Y: " + str(round(target[1] * 1000)), end=" mm ")
-            # print("Z: " + str(round(target[2] * 1000)), end=" mm\n")
-
+    
     # Either enable or disable the servoing variable on the robot
-    def send_state(self, servoing = 0):
-        # The following are the names of the states and their purpose
-        # 0 - LOCATE FRUIT - No servoing, gripper opened, waits for instruction
-        # 1 - MOVE TO FRUIT - Servong to approximate position, gripper opened
-        # 2 - VISUAL SERVOING - Servoing towards visible fruit
-        # 3 - GRABBING STATE - Continue servoing toward the fruit while closing the gripper
-        # 4 - DROP OFF SEQUENCE - Closes the gripper and drops off the fruit once it is closed
-        # 5 - RETURN TO START - Goes back to the starting position of the program
-
+    def send_state(self, state: int):
         # Signal to the UR5 that it may execute a servoing command
-        self.rtde.servo.input_int_register_0 = servoing
+        self.rtde.servo.input_int_register_0 = state
         self.rtde.con.send(self.rtde.servo)
 
     ### TARGET MANIPULATION FUNCTIONS ###
-    # Given a list of candidate targets relative to the realsense determines the position of the most likely target
-    def extract_target(self, targets, image_time):
+    # Given a list of candidate targets relative to the realsense determines the position of the closest target and the global coordinates
+    def locate_nearest(self, targets, image_time):
         # Updates the pose values of the UR5 and realsense
         self.set_tcp_pose(image_time)
 
         min_error = 1
-        best_position = []
         
-        # Convert all the targets to global coordinates and evaluate the best one
+        # Convert all the targets to global coordinates and evaluate the best one according to distance from the TCP
         for target in targets:
-            position = self.realsense_to_position([target.x, target.y, target.z])
-            error = abs(self.actual_tcp[0] - position[0]) + abs(self.actual_tcp[1] - position[1]) + abs(self.actual_tcp[2] - position[2])
+            # Comparing the distance from the TCP to the fruit
+            position = self.realsense_to_tcp(target)
+            error = abs(position.x) + abs(position.y) + abs(position.z - self.tcp_offset)
 
+            # Calculating if this is a minimum reading and saving it if it is
             if error < min_error:
-                best_position = position
+                best = position
                 min_error = error
+
+        # Calculating the global position of the kiwifruit
+        best_position = self.tcp_to_base(best)
 
         return best_position
 
-    # Rotates the position of a point (x, y) about the origin by a given angle
+    '''# Rotates the position of a point (x, y) about the origin by a given angle
     def rotate_point(self, point, angle):
         x = point[0]
         y = point[1]
@@ -255,34 +240,124 @@ class ur_five:
         x_rot = radius * math.cos(theta_rot)    
         y_rot = radius * math.sin(theta_rot)    
 
-        return [x_rot, y_rot]
+        return [x_rot, y_rot]'''
 
-    # Takes the position relative to the realsense and converts it to global coordinates
-    def realsense_to_position(self, point):
+    # Converts a coordinate relative to the TCP to a coordinate relative to the base
+    def tcp_to_base(self, point: Point) -> Point:
+        # print("Rx: " + str(round(self.actual_tcp[3], 2)), end="")
+        # print(" Ry: " + str(round(self.actual_tcp[4], 2)), end="")
+        # print(" Rz: " + str(round(self.actual_tcp[5], 2)))
+
+        rx = self.actual_tcp[3]
+        ry = self.actual_tcp[4]
+        rz = self.actual_tcp[5]
+
+        # Converting the pose to axis angle notation
+        theta = math.sqrt(rx * rx + ry * ry + rz * rz)
+
+        ux = rx / theta
+        uy = ry / theta
+        uz = rz / theta
+
+        # print("ux: " + str(round(ux, 2)), end="")
+        # print(" uy: " + str(round(uy, 2)), end="")
+        # print(" uz: " + str(round(uz, 2)), end ="")
+        # print(" theta: " + str(round(uz, 2)))
+
+        # Converting the axis angle to a rotation matrix per term for x, y and z 
+        # Refer to the Wikipedia article on rotation matrix: rotation matrix from axis angle
+
+        # Precalculating the sine and cosine for readability and efficiency
+        cos = math.cos(theta)
+        sin = math.sin(theta)
+
+        # The notation here refers to the row coordinate then the column
+        # For example xy refers to the proportion of old y in the new x
+        xx = cos + ux * ux * (1 - cos)
+        xy = uy * ux * (1 - cos) + uz * sin
+        xz = uz * ux * (1 - cos) - uy * sin
+
+        yx = ux * uy * (1 - cos) - uz * sin
+        yy = cos + uy * uy * (1 - cos)
+        yz = uz * uy * (1 - cos) + ux * sin
+
+        zx = ux * uz * (1 - cos) + uy * sin
+        zy = uy * uz * (1 - cos) - ux * sin
+        zz = cos + uz * uz * (1 - cos)
+
+        # Multiplying the per term rotation by the inputted point
+        transformed_point = Point()
+
+        transformed_point.x = point.x * xx + point.y * xy + point.z * xz
+        transformed_point.y = point.x * yx + point.y * yy + point.z * yz
+        transformed_point.z = point.x * zx + point.y * zy + point.z * zz
+
+        print("base x: " + str(round(transformed_point.x, 2)), end="")
+        print(" y: " + str(round(transformed_point.y, 2)), end="")
+        print(" z: " + str(round(transformed_point.z, 2)))
+
+        return transformed_point
+
+    # Converts a coordinate given relative to the realsense to a coordinate relative to the TCP
+    def realsense_to_tcp(self, point: Point) -> Point:
+        # Applying a rotation of the realsense relative to the TCP
+        # Converting the rotation angle to radians
+        theta = 31.5 * math.pi / 180
+
+        # Flipping the direction of the x and y axes
+        x_1 = - point.x
+        y_1 = - point.y
+        z_1 = point.z
+
+        # Rotating the x and z axes
+        x_2 = x_1 * math.cos(theta) - z_1 * math.sin(theta)
+        y_2 = y_1
+        z_2 = x_1 * math.sin(theta) + z_1 * math.cos(theta)
+
+        # Applying a translation of the realsense relative to the TCP
+        transformed_point = Point()
+
+        transformed_point.x = x_2 + self.realsense_offset[0]
+        transformed_point.y = y_2 + self.realsense_offset[1]
+        transformed_point.z = z_2 + self.realsense_offset[2]
+
+        # print("tcp x: " + str(round(transformed_point.x, 2)), end="")
+        # print(" y: " + str(round(transformed_point.y, 2)), end="")
+        # print(" z: " + str(round(transformed_point.z, 2)))
+
+        return transformed_point
+
+    # Converts the coordinate relative to the realsense to a coordinate relatice to the base
+    def realsense_to_base(self, point: Point) -> Point:
+        tcp_point = self.realsense_to_tcp(point)
+        base_point = self.tcp_to_base(tcp_point)
+
+        return base_point
+
+    '''# Takes the position relative to the realsense and converts it to global coordinates
+    def realsense_to_position(self, point: Point) -> Point:
         # Rotating the XZ plane clockwise by theta degrees
         theta = 31.49 * math.pi / 180
 
-        x_rot = - point[0] * math.cos(theta) - point[2] * math.sin(theta)
-        z_rot = point[0] * math.sin(theta) - point[2] * math.cos(theta)
+        x_rot = - point.x * math.cos(theta) - point.z * math.sin(theta)
+        z_rot = point.x * math.sin(theta) - point.z * math.cos(theta)
 
         # Translating the position to align the centre of the TCP to the camera
         x_trn = x_rot + self.realsense_offset[0]
-        y_trn = - point[1]
+        y_trn = - point.y
         z_trn = - z_rot + self.realsense_offset[2]
 
         # Rotating the x and y coordinates of the point according to the rotation of the TCP
         xy_rotated = self.rotate_point([y_trn, x_trn], self.actual_tcp[5])
 
         # Applying the transform noting that the axis of the realsense are rotated by 90
-        x = self.actual_tcp[0] + xy_rotated[1]
-        y = self.actual_tcp[1] + xy_rotated[0]
-        z = self.actual_tcp[2] + z_trn - self.tcp_offset
+        position = Point()
 
-        # print(" X: " + str(round(xy_rotated[0] * 1000)), end="")
-        # print(" Y: " + str(round(xy_rotated[1] * 1000)), end="")
-        # print(" Z: " + str(round(z_trn * 1000)))
+        position.x = self.actual_tcp[0] + xy_rotated[1]
+        position.y = self.actual_tcp[1] + xy_rotated[0]
+        position.z = self.actual_tcp[2] + z_trn - self.tcp_offset
         
-        return [x, y, z]
+        return position'''
 
     # Takes the position relative to the nerian and converts it to global coordinates
     def nerian_to_position(self, point: Point):
@@ -357,29 +432,19 @@ class realsense:
         frame_hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
         frame_mask = cv.inRange(frame_hsv, self.hsv_ranges[0], self.hsv_ranges[1])
 
-        cv.imshow("one", frame_mask)
-        cv.waitKey(1)
+        # cv.imshow("one", frame_mask)
+        # cv.waitKey(1)
 
         # Applying some morphological filters
         kernel_open = cv.getStructuringElement(cv.MORPH_ELLIPSE, [5, 5])
         kernel_close = cv.getStructuringElement(cv.MORPH_ELLIPSE, [23, 23])
 
         frame_mask = cv.morphologyEx(frame_mask, cv.MORPH_OPEN, kernel_open)
-
-        # cv.imshow("two", frame_mask)
-        # cv.waitKey(1)
-
         frame_mask = cv.morphologyEx(frame_mask, cv.MORPH_CLOSE, kernel_close)
-
-        # cv.imshow("three", frame_mask)
-        # cv.waitKey(1)
 
         # Finding the contours of the potential fruit
         contours, heirarchy = cv.findContours(frame_mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
         frame_mask = cv.drawContours(frame_mask, contours, -1, 127, 3)
-
-        # cv.imshow("four", frame_mask)
-        # cv.waitKey(1)
 
         fruits = []
 
@@ -410,19 +475,18 @@ class realsense:
         return fruits
 
     # Converting an image position to a cartesian position
-    def image_to_position(self, point):
+    def image_to_position(self, pixel_position):
         # Returning the error for the control system to deal with
         position = Point()
 
         # Doing the calculations
-        position.z = 0.001 * self.get_depth(point)
-        position.x = 0.001 * float((point[0] - self.x_centre) * position.z * 1000) / self.x_focal
-        position.y = 0.001 * float((point[1] - self.y_centre) * position.z * 1000) / self.y_focal
+        position.z = 0.001 * self.get_depth(pixel_position)
+        position.x = 0.001 * float((pixel_position[0] - self.x_centre) * position.z * 1000) / self.x_focal
+        position.y = 0.001 * float((pixel_position[1] - self.y_centre) * position.z * 1000) / self.y_focal
 
-        # Printing out the errors
-        # print("X Error: " + str(round(position.x * 1000)) + " mm ", end="")
-        # print("Y Error: " + str(round(position.y * 1000)) + " mm ", end="")
-        # print("Z Error: " + str(position.z * 1000) + " mm ")
+        # print("x: " + str(round(position.x, 2)), end="")
+        # print(" y: " + str(round(position.y, 2)), end="")
+        # print(" z: " + str(round(position.z, 2)))
 
         return position
     
@@ -450,7 +514,7 @@ class realsense:
 
         return depth_reading
     
-# Defininf the global camera input and output functions
+# Defining the global camera input and output functions
 class nerian:
     # Initialising all the variables
     def __init__(self):
