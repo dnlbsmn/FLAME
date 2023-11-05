@@ -8,17 +8,23 @@ import time
 import math
 import cv2 as cv
 import numpy as np
+import threading
 
 # Importing all the ROS libraries
 import rospy
 from cv_bridge import CvBridge
 
 # Importing the ros message types
+from std_msgs.msg import Header
+
 from sensor_msgs.msg import CameraInfo
-from nerian_stereo.msg import StereoCameraInfo
-from geometry_msgs.msg import Point
-from std_msgs.msg import Float64MultiArray
 from sensor_msgs.msg import Image
+from nerian_stereo.msg import StereoCameraInfo
+
+from geometry_msgs.msg import PoseArray
+from geometry_msgs.msg import Pose
+from geometry_msgs.msg import Point
+from geometry_msgs.msg import PointStamped
 
 # Import all the other bits
 import rtdeState
@@ -28,9 +34,42 @@ import rtdeState
 
 # Defining the ur five input and output communication
 class ur_five:
+    ### BASIC INTERFACING ###
+    # Turn on the ur_five object
+    def turn_on(self):
+        self.on = True
+        
+        # Connecting to the realtime data exchange
+        self.rtde = rtdeState.RtdeState('192.168.10.20', 'rtdeCommand.xml')
+        self.rtde.initialize()
+
+        # Start the stream that publishes the position of the target
+        self.position_pub = rospy.Publisher("flame/perceived_position", PointStamped, queue_size = 1)
+        self.error_pub = rospy.Publisher("flame/position_error", Point, queue_size = 1)
+
+        # Starting the workflow of predicted position to RTDE
+        self.target_sub = rospy.Subscriber("/flame/predicted_position", Point, self.upload_pose)
+        self.fruits_sub = rospy.Subscriber("/flame/realsense_positions", PoseArray, self.servo_realsense)
+
+        # Start the thread to record the TCP poses of the UR5
+        tcp_recorder = threading.Thread(target = self.record_tcp)
+        tcp_recorder.start()
+
+    # Turn off the ur_five object
+    def turn_off(self):
+        # Disconnecting all the cables
+        self.position_pub.unregister()
+        self.error_pub.unregister()
+        self.target_sub.unregister()
+        
+        self.on = False
+
     ### INITIALISATION ###
     # Starting up the global variables
     def __init__(self, fruit = True):
+        # Starting the object as off
+        self.on = False
+
         # Declaring the rate at which the robot can run
         self.target_time = time.time()
         self.delay_time = 0.0
@@ -53,24 +92,15 @@ class ur_five:
         # Defining a variable to track the state according to the UR5 or the computer
         self.pick_state = 0
 
-    # Connect to the UR5 robot
-    def connect(self) -> None:
-        robot_host = '192.168.10.20'
-        config_filename = 'rtdeCommand.xml'
+    # The function that continuously records the TCP pose of the UR5 when it is on
+    def record_tcp(self) -> None:
+        while self.on:
+            self.download_pose()
+            time.sleep(0.01)
 
-        self.rtde = rtdeState.RtdeState(robot_host, config_filename)
-
-        self.rtde.initialize()
-
-    # Begin streaming to the UR5
-    def begin_stream(self) -> None:
-        # Start the stream to output for testing
-        self.position_pub = rospy.Publisher("flame/perceived_position", Float64MultiArray, queue_size = 1)
-        self.error_pub = rospy.Publisher("flame/position_error", Point, queue_size = 1)
-
-    ### COMMUNICATION ###
+    ### RTDE COMMUNICATION ###
     # Appends the current pose of the UR5 to the array of poses
-    def receive_tcp_pose(self) -> None:
+    def download_pose(self) -> None:
         # Update the state of the robot
         state = self.rtde.receive()
         time_stamp = time.time()
@@ -91,25 +121,8 @@ class ur_five:
         # Append the most recent reading to the start of the list
         self.tcps[0] = [tcp, time_stamp]
 
-    # Given a certain time stamp it will set the current tcp pose to that of the nearest time match
-    def update_pose(self, pose_time) -> None:
-        # Set a flag to indicate that a tcp match has been made
-        too_early = 1
-
-        # Iterate through all the tcp readings until one is later than the desired time
-        for tcp in self.tcps:
-            if (tcp != 0):
-                if (tcp[1] < pose_time):
-                    self.actual_tcp = tcp[0]
-                    too_early = 0
-                    break
-
-        # If no matching tcp pose was found in memory
-        if too_early:
-            print("No valid TCP pose was found")
-
-    # Given a point relative to the Realsense convert and send a target to the UR5
-    def send_pose(self, position: Point) -> None:
+    # Uploads a pose to the registers used for communicating pose with the RTDE
+    def upload_pose(self, position: Point) -> None:
         target = [0, 0, 0, 0, 0, 0]
 
         # Dealing with the translation first
@@ -117,7 +130,7 @@ class ur_five:
         target[1] = position.y
         target[2] = position.z
 
-        # If any of the movement limits are violated do not send the target
+        # If any of the movement limits are violated do not upload the target
         if (position.x < 0.2) or (position.x > 0.84):
             print("Position out of range x")
             return
@@ -132,7 +145,7 @@ class ur_five:
         # Dealing with the rotation next
         rotation = self.get_rotation()
 
-        # If any of the movement limits are violated do not send the target
+        # If any of the movement limits are violated do not upload the target
         if (rotation.x < -0.6) or (rotation.x > 0.6):
             print("Rotation out of range x")
             return
@@ -147,7 +160,7 @@ class ur_five:
         target[4] = rotation.y
         target[5] = rotation.z
 
-        # If time greater or equal to the delay time has passed, send the target position
+        # If time greater or equal to the delay time has passed, upload the target position
         if time.time() >= self.target_time:
             # Upload the target to the UR5 robotic arm
             for i in range(0, len(target)):
@@ -158,34 +171,35 @@ class ur_five:
             self.target_time = time.time() + self.delay_time
 
     # Updates all the variables of the code to match that of the actual UR5
-    def update_variables(self) -> None:
+    def download_variables(self) -> None:
         state = self.rtde.receive()
 
         # Read the state variable from the UR5
         self.pick_state = state.output_int_register_0
 
     # Either enable or disable the servoing variable on the robot
-    def send_variables(self, state: int) -> None:
+    def upload_variables(self, state: int) -> None:
         # Signal to the UR5 that it may execute a servoing command
         self.rtde.servo.input_int_register_0 = state
         self.rtde.con.send(self.rtde.servo)
 
+    ### ROSTOPIC COMMUNICATION ###
     # Publishes the target to the predictive motion node
     def publish_position(self, position: Point, position_time: float) -> None:
         # If the position is empty dont try to send it
-        if position == []:
+        if position == None:
             return
 
         # Publish the global position of the detected fruit for data recording
-        pub_point = Float64MultiArray()
+        pub_point = PointStamped()
 
-        point_data = [0, 0, 0, 0]
-        point_data[0] = position.x
-        point_data[1] = position.y
-        point_data[2] = position.z
-        point_data[3] = position_time
+        pub_point.point.x = position.x
+        pub_point.point.y = position.y
+        pub_point.point.z = position.z
 
-        pub_point.data = point_data
+        pub_point.header.stamp.secs = int(position_time)
+        pub_point.header.stamp.nsecs = int((position_time % 1) * 10 ** 9)
+
         self.position_pub.publish(pub_point)
 
         # Calculates the error of the current target and publishes it to the ros topic
@@ -200,6 +214,10 @@ class ur_five:
     ### POSITION MANIPULATION ###
     # Converts a coordinate relative to the TCP to a coordinate relative to the base
     def tcp_to_base(self, point: Point) -> Point:
+        # If no TCP pose has been sent yet, do not attempt to perform the calculation
+        if self.actual_tcp == [0,0,0,0,0,0]:
+            return
+
         # First rotating the position of the fruit relative to the global axes
         # Note that the angles of x and y are flipped to counteract some flipping action done earlier
         rx = - self.actual_tcp[3]
@@ -248,9 +266,9 @@ class ur_five:
         transformed_point.y = rotated_point.y + self.actual_tcp[1]
         transformed_point.z = rotated_point.z + self.actual_tcp[2]
 
-        print("base x: " + str(round(transformed_point.x, 2)), end="")
-        print(" y: " + str(round(transformed_point.y, 2)), end="")
-        print(" z: " + str(round(transformed_point.z, 2)))
+        # print("base x: " + str(round(transformed_point.x, 2)), end="")
+        # print(" y: " + str(round(transformed_point.y, 2)), end="")
+        # print(" z: " + str(round(transformed_point.z, 2)))
 
         return transformed_point
 
@@ -289,25 +307,30 @@ class ur_five:
         return transformed_point
 
     # Takes the position relative to the nerian and converts it to global coordinates
-    def nerian_to_base(self, point: Point):
-        x = - point.y + 0.6
-        y = point.x - 0.025
-        z = point.z - 0.65
+    def nerian_to_base(self, point: Point) -> Point:
+        position = Point()
+        
+        position.x = - point.y + 0.6
+        position.y = point.x - 0.025
+        position.z = point.z - 0.65
 
-        return [x, y, z]
+        return position
     
     ### MISCELLANEOUS ###
     # Given a list of candidate targets relative to the realsense determines the position of the closest target and the global coordinates
-    def locate_nearest(self, targets, image_time) -> Point:
+    def servo_realsense(self, targets: PoseArray) -> None:
+        # Declaring the time when the image was captured
+        image_time = float(targets.header.stamp.secs) + float(targets.header.stamp.secs) / (10 ** 9)
+
         # Updates the pose values of the UR5 and realsense
         self.update_pose(image_time)
 
         min_error = 1
         
         # Convert all the targets to TCP coordinates and evaluate the best one according to distance from the TCP
-        for target in targets:
+        for target in targets.poses:
             # Comparing the distance from the TCP to the fruit
-            position = self.realsense_to_tcp(target)
+            position = self.realsense_to_tcp(target.position)
             error = abs(position.x) + abs(position.y) + abs(position.z)
 
             # Calculating if this is a minimum reading and saving it if it is
@@ -318,7 +341,8 @@ class ur_five:
         # Calculating the global position of the kiwifruit
         best_position = self.tcp_to_base(best)
 
-        return best_position
+        # Publish the closest position to the motion estimator
+        self.publish_position(best_position, image_time)
 
     # Returns the rotation value of the UR5 as a point
     def get_rotation(self) -> Point:
@@ -326,13 +350,51 @@ class ur_five:
 
         # Approximate the rotation about the y axis to be a sine wave
         rotation.x = 0
-        rotation.y = 0 # 0.5 * math.sin(0.1 * (2 * math.pi * time.time()))
+        rotation.y = 0 # 0.5 * math.sin(0.5 * (2 * math.pi * time.time()))
         rotation.z = 0
 
         return rotation
 
+    # Given a certain time stamp it will set the current tcp pose to that of the nearest time match
+    def update_pose(self, pose_time) -> None:
+        # Iterate through all the tcp readings until one is later than the desired time
+        for tcp in self.tcps:
+            if (tcp != 0):
+                if (tcp[1] < pose_time):
+                    self.actual_tcp = tcp[0]
+                    break
+
 # Defining the camera in hand input and image processing object
 class realsense:
+    ### BASIC INTERFACING ###
+    # Connecting up all the internals and turning it on
+    def turn_on(self):
+        # Waiting for camera intrinsics to be sent
+        K_matrix = rospy.wait_for_message('/camera/aligned_depth_to_color/camera_info', CameraInfo).K
+
+        # Storing the entrinsics for future calculations
+        self.x_focal = K_matrix[0]
+        self.y_focal = K_matrix[4]
+        self.x_centre = K_matrix[2]
+        self.y_centre = K_matrix[5]
+
+        # Starting up all the ROS subscribers of the image streams
+        self.depth_sub = rospy.Subscriber("/camera/aligned_depth_to_color/image_raw", Image, self.process_depth, queue_size = 1)
+        self.image_sub = rospy.Subscriber("/camera/color/image_raw", Image, self.process_image, queue_size = 1)
+
+        # Starting up all the ROS publishers for outputing the kiwifruit point
+        self.position_pub = rospy.Publisher("/flame/realsense_positions", PoseArray, queue_size = 1)
+
+        self.on = True
+
+    # Shutting it down elegantly 
+    def turn_off(self):
+        # Disconnecting all the cables
+        self.depth_sub.unregister()
+        self.image_sub.unregister()
+
+        self.on = False
+
     ### INITIALISATION ###
     # Initialise the default values of the HSV filter
     def __init__(self, fruit = True):
@@ -347,16 +409,8 @@ class realsense:
             self.target_depth = 0
             self.hsv_ranges = [(20, 80, 40), (35, 255, 255)]
 
-    # Loading all the camera parameters for future calculations
-    def load_parameters(self):
-        # Waiting for camera entrinsics to be sent
-        K_matrix = rospy.wait_for_message('/camera/aligned_depth_to_color/camera_info', CameraInfo).K
-
-        # Storing the entrinsics for future calculations
-        self.x_focal = K_matrix[0]
-        self.y_focal = K_matrix[4]
-        self.x_centre = K_matrix[2]
-        self.y_centre = K_matrix[5]
+        # The expected delay of capturing an image
+        self.delay = 0.034
 
     # Load in the YOLO model
     def load_yolo(self):
@@ -415,7 +469,7 @@ class realsense:
         return fruits
 
     # Converting an image position to a cartesian position
-    def image_to_realsense(self, image_position):
+    def image_to_realsense(self, image_position) -> Point:
         # Returning the error for the control system to deal with
         position = Point()
 
@@ -427,7 +481,7 @@ class realsense:
         return position
     
     # Given a point on the image the average depth of the neighborhood will be found and offset applied
-    def get_depth(self, image_position):
+    def get_depth(self, image_position) -> float:
         # Defining the boundaries of the area of extraction
         sample_radius = 5
 
@@ -457,37 +511,57 @@ class realsense:
 
     # Processing an RGB image when received
     def process_image(self, data):
+        # Recording the time prior to any preprocessing
+        image_time = time.time() - self.delay
+
+        # Formatting the time for the header object
+        header = Header()
+        header.stamp.secs = int(image_time)
+        header.stamp.nsecs = int((image_time % 1) * 10 ** 9)
+
         # Converting the received image and extracting the fruit from it
         image = self.bridge.imgmsg_to_cv2(data, "bgr8")
         fruits = self.extract_fruit(image)
 
         # Converting the image position of the fruit to a spacial position
-        fruit_locations = []
+        fruit_poses = []
 
         if fruits is not None:
             for fruit in fruits:
-                fruit_locations.append(self.image_to_realsense(fruit))
+                # Displaying the fruit on the image
                 cv.circle(image, (fruit[0], fruit[1]), 3, (255, 0, 255), -1)
+
+                # Saving the fruit poses
+                fruit_pose = Pose()
+                fruit_pose.position = self.image_to_realsense(fruit)
+                fruit_poses.append(fruit_pose)
 
         cv.imshow("window", image)
         cv.waitKey(1)
 
-        return fruit_locations
+        fruit = PoseArray()
+        fruit.header = header
+        fruit.poses = fruit_poses
+
+        # Publishing all the fruit poses that were identified
+        self.position_pub.publish(fruit)
   
 # Defining the global camera input and output functions
 class nerian:
     ### INITIALISATION ###
     # Initialising all the variables
     def __init__(self, fruit):
+        self.on = False
+
         # Initialising the image processing values
         self.bridge = CvBridge()
 
         if fruit:
             self.hsv_ranges = [(15, 100, 40), (25, 255, 255)]
 
-    # Getting all the parameters of the camera
-    def load_parameters(self):
-        # Waiting for camera entrinsics to be sent
+    # Turning on and getting all the parameters of the camera
+    def turn_on(self):
+        # Waiting for camera intrinsics to be sent
         camera_info = rospy.wait_for_message('/nerian_stereo/stereo_camera_info', StereoCameraInfo)
 
         K_matrix = camera_info.left_info.K
@@ -498,6 +572,12 @@ class nerian:
         self.y_focal = K_matrix[4]
         self.x_centre = K_matrix[2]
         self.y_centre = K_matrix[5]
+
+        self.on = True
+
+    # Turning off and deregistering from the rostopics
+    def turn_off(self):
+        self.on = False
 
     ### IMAGE PROCESSING ###
     # Extracting the fruit out of the nerian frame
@@ -593,14 +673,33 @@ class nerian:
 
 # Defining a object that takes a stream of timestamped positions and predicts the next prediction
 class crystal_ball:
+    ### BASIC INTERFACING ###
+    # Turning on and connecting up all the components
+    def turn_on(self):
+        # Starting up the input and output nodes of the system
+        self.point_pub = rospy.Publisher("flame/predicted_position", Point, queue_size = 1)
+        self.point_sub = rospy.Subscriber("/flame/perceived_position", PointStamped, self.predict_position)
+
+        self.on = True
+
+    # Closing down the system cleanly
+    def turn_off(self):
+        # Disconnecting all the cables
+        self.point_pub.unregister()
+        self.point_sub.unregister()
+
+        self.on = False
+
     # Initialising the crystal ball
     def __init__(self):
+        self.on = False
+
         # Declaring the lookahead time and predition method
-        prediction_method = 4
+        # 0- Velocity Average, 1- Velocity Smudge, 2- Acceleration Smudge, 3- Acceleration Smudge - Tuned, 4- No Prediction
+        prediction_method = 3
         lookahead = 0.25
 
         # Declaring the prediction algorithm object
-        # 0- Velocity Average, 1- Velocity Smudge, 2- Acceleration Smudge, 3- Acceleration Smudge - Tuned, 4- No Prediction
         self.fruit_predict = self.predict(prediction_method, lookahead)
 
         # Declaring an evaluation as well as a simulation
@@ -609,28 +708,7 @@ class crystal_ball:
 
         # Starting all the respective rostopic streams
         self.fruit_evaluate.start_stream()
-
-    # Starting up the ros nodes for receiving and sending positions
-    def start_stream(self):
-        self.point_pub = rospy.Publisher("flame/predicted_position", Point, queue_size = 1)
  
-    # Callback for recieving fruit positions
-    def predict_position(self, data):
-        fruit_position = data.data
-
-        self.fruit_predict.predict_position(fruit_position)
-        
-        predicted_point = Point()
-
-        predicted_point.x = self.fruit_predict.predicted_pos[0]
-        predicted_point.y = self.fruit_predict.predicted_pos[1]
-        predicted_point.z = self.fruit_predict.predicted_pos[2]
-
-        self.point_pub.publish(predicted_point)
-
-        # Calculate prediction error
-        self.fruit_evaluate.compare(fruit_position, self.fruit_predict.predicted_pos)
-
     # Continuously runs a simulation with a specific motion until the q key is pressed
     def start_simulation(self):
         while True:
@@ -641,7 +719,7 @@ class crystal_ball:
             print("predicted: ", self.fruit_predict.predicted_pos)
 
             # Evaluate the prediction error
-            self.fruit_evaluate.compare(fruit_position, self.fruit_predict.predicted_pos)
+            self.fruit_evaluate.compare(fruit_position[:3], fruit_position[3], self.fruit_predict.predicted_pos)
 
             # Show visual of fruit
             self.fruit_evaluate.display(future_pos, self.fruit_predict.predicted_pos)
@@ -649,6 +727,25 @@ class crystal_ball:
             # Run simulation at desired speed, exit on 'q'
             if (cv.waitKey(int((1000/self.fruit_simulate.simulation_sampling_frequency)/self.fruit_simulate.playback_speed)) & 0xFF == ord('q')):
                 break
+
+    # Callback for recieving fruit positions
+    def predict_position(self, data: PointStamped):
+        # Conver
+        fruit_position = data.point
+        reading_time = float(data.header.stamp.secs) + float(data.header.stamp.nsecs) / (10 ** 9) 
+
+        self.fruit_predict.predict_position(fruit_position, reading_time)
+        
+        predicted_point = Point()
+
+        predicted_point.x = self.fruit_predict.predicted_pos[0]
+        predicted_point.y = self.fruit_predict.predicted_pos[1]
+        predicted_point.z = self.fruit_predict.predicted_pos[2]
+
+        self.point_pub.publish(predicted_point)
+
+        # Calculate prediction error
+        self.fruit_evaluate.compare(fruit_position, reading_time, self.fruit_predict.predicted_pos)
 
     # Handles the prediction model
     class predict:
@@ -684,7 +781,10 @@ class crystal_ball:
             self.gauss = self.gaussuian_filter(self.gauss_size, self.GAUSSIAN_DIST, 0)
 
         # Apply prediction
-        def predict_position(self, pos):
+        def predict_position(self, position: Point, reading_time: float):
+            # Convert from a ros message to an array
+            pos = [position.x, position.y, position.z, reading_time]
+
             # push onto shift register
             self.push_fruit_pos_sr(pos)
 
@@ -886,10 +986,12 @@ class crystal_ball:
 
         # Start the stream for the prediction error
         def start_stream(self):
-            self.predict_pub = rospy.Publisher("flame/prediction_error", Float64MultiArray, queue_size = 1)
+            self.predict_pub = rospy.Publisher("flame/prediction_error", PointStamped, queue_size = 1)
 
         # Compares streams of position and predicted_position
-        def compare(self, position, predicted_position):
+        def compare(self, actual_position: Point, time, predicted_position):
+            # Converting from the ROS message to an array
+            position = [actual_position.x, actual_position.y, actual_position.z, time]
 
             # Check for NaN values
             predicted_position = self.check_predicted_position(position, predicted_position)
@@ -961,15 +1063,15 @@ class crystal_ball:
             self.predicted_positions = np.delete(self.predicted_positions, del_idx, 0)
 
             # Publish prediction error
-            pub_prediction = Float64MultiArray()
+            pub_prediction = PointStamped()
 
-            pub_prediction_data = [0, 0, 0, 0]
-            pub_prediction_data[0] = float(error[0])
-            pub_prediction_data[1] = float(error[1])
-            pub_prediction_data[2] = float(error[2])
-            pub_prediction_data[3] = float(error[3])
+            pub_prediction.point.x = float(error[0])
+            pub_prediction.point.y = float(error[1])
+            pub_prediction.point.z = float(error[2])
 
-            pub_prediction.data = pub_prediction_data
+            pub_prediction.header.stamp.secs = int(error[3])
+            pub_prediction.header.stamp.nsecs = int((error[3] % 1) * 10 ** 9)
+
             self.predict_pub.publish(pub_prediction)
 
     # Simulate a fruit swinging 
