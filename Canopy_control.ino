@@ -9,6 +9,9 @@
 // Set both motors frequency N (Hz) 'm3 N'
 // Set Phase Offset N (Degrees)     'po N'
 
+#include <string.h>
+#include <stdlib.h>
+
 //Connections
 #define POT_1 9
 #define B_1 2
@@ -36,12 +39,15 @@
 #define D2 0
 
 #define TICK_ARRAY_LENGTH 48
-
 #define MOTOR_INPUT_CAP 255
 
 //UI configuration
 #define PRINT_TIME 250
 #define SERIAL_READ_TIME 5000
+
+bool print_flag = 0;
+bool print_toggle = 0;
+bool print_for_gui = 0;
 
 long tick_time1, tick_time2; 
 double frequency1, frequency2; 
@@ -75,8 +81,8 @@ double target_phase_offset;
 
 void setup() {
   Serial.begin(9600);
-  Serial.println("BEGIN");
-  delay(500);
+  Serial.print("BEGIN");
+  delay(200);
   
   // Set encoder pins as inputs
 	pinMode(B_1,INPUT);
@@ -146,44 +152,75 @@ void loop() {
   double dt;
   
   // Check for serial inputs every few seconds
-  if (millis() - read_time > SERIAL_READ_TIME) {
+  if (Serial.available()){
     read_time = millis();
     val_str = Serial.readString();
 
     // if input is "x", stop 
-    if (val_str == "x\n") {
+    if ((val_str == "x\n") | (val_str == "stop\n")) {
       stop();
+    } 
+    // if input is "toggle_print" print until entered again
+    else if ((val_str == "toggle print\n") | (val_str == "tp\n")){
+      print_toggle = !print_toggle;
+    } 
+    // if input is "p" print one line
+    else if (val_str == "p\n") {
+      print_flag = 1;
     }
-
     // if input is in the form "m1 N", set motor 1 to frequency N
-    if (val_str.substring(0, 3) == "m1 ") {
+    else if (val_str.substring(0, 3) == "m1 ") {
       val_sub = val_str.substring(3, '\n');
       if (val_sub.toFloat() > 0) {
         val1 = val_sub.toFloat();
         phase_align = 0;
       }        
+    }
     // if input is in the form "m2 N", set motor 2 to frequency N
-    } else if (val_str.substring(0, 3) == "m2 ") {
+    else if (val_str.substring(0, 3) == "m2 ") {
       val_sub = val_str.substring(3, '\n');
       if (val_sub.toFloat() > 0) {
         val2 = val_sub.toFloat();
         phase_align = 0;
       }
+    }
     // if input is in the form "m3 N", set both motors to frequency N
-    } else if (val_str.substring(0, 3) == "m3 ") {
+    else if (val_str.substring(0, 3) == "m3 ") {
       val_sub = val_str.substring(3, '\n');
       if (val_sub.toFloat() > 0) {
         val1 = val_sub.toFloat();
         val2 = val_sub.toFloat();
         phase_align = 0;
       }
+    }
     // if input is in the form "po N", set target phase offset to N (Degrees)
-    } else if (val_str.substring(0, 3) == "po ") {
+    else if (val_str.substring(0, 3) == "po ") {
       val_sub = val_str.substring(3, '\n');
       if (val_sub.toFloat() > 0) {
         target_phase_offset = (val_sub.toFloat())/360;
         if (target_phase_offset > 0.5) target_phase_offset -= 1;
       }
+    }
+    // if input is in the form "po N", set target phase offset to N (Degrees)
+    else if (val_str.substring(0, 3) == "gui") {
+      char *token = strtok(val_str.c_str(), ",");
+      int c = 0;
+      while (token != NULL) {
+        c++;
+        if (c == 2) val1 = strtod(token,NULL);
+        else if (c == 3) val2 = strtod(token,NULL);
+        else if (c == 4) target_phase_offset = strtod(token,NULL)/360;
+
+        token = strtok(NULL, ",");
+      } 
+      print_for_gui = 1;
+      print_toggle = 0;
+      print_flag = 0;
+    }
+    // If input is none of the above, print error message
+    else if (val_str != "Arbitrary string"){
+      Serial.print("Unrecognised command");
+      val_str = "Arbitrary string";
     }
 
     // Reset encoder tick timers
@@ -246,7 +283,7 @@ void loop() {
     // Encoder 2 poll
     if (B2_tick != B2_prev & B2_tick == 1){
 
-      if (A2_tick != B2_tick) {
+      if (A2_tick == B2_tick) {
         tick_delays2[0] = millis() - tick_time2;
         for (int i=(TICK_ARRAY_LENGTH-1);i>0;i--) {
           tick_delays2[i] = tick_delays2[i-1];
@@ -278,8 +315,12 @@ void loop() {
     
     // Targets from user input
     target_frequency1 = val1;
-    target_frequency2 = val2 * phase_correction;
-    
+
+    if (val2 == val1) 
+      target_frequency2 = val2 * phase_correction;
+    else
+      target_frequency2 = val2;
+
     // If no ticks detected for over a second, empty tick arrays
     if ((millis() - tick_time1 > 1000) & (millis() - tick_time1 < 1050)) {
       for (int h=0; h<TICK_ARRAY_LENGTH; h++) {
@@ -357,22 +398,38 @@ void loop() {
     analogWrite(POT_2, input_PWM2);
 
     // Print outputs 
-    if (millis() % PRINT_TIME == 30) {
-      Serial.print(val1);
-      Serial.print(", ");
-      Serial.print(frequency1);
-      Serial.print(", ");
-      Serial.print(input_PWM1);
-      Serial.print(", ");
-      Serial.print(target_frequency2);
-      Serial.print(", ");
-      Serial.print(frequency2);
-      Serial.print(", ");
-      Serial.print(input_PWM2);
-      Serial.print(", ");
-      Serial.print(target_phase_offset);
-      Serial.print(", ");
-      Serial.println(phase_error_degrees);
+    if (print_flag | print_toggle) {
+      if (millis() % PRINT_TIME == 30) {
+        Serial.print(val1);
+        Serial.print(", ");
+        Serial.print(frequency1);
+        Serial.print(", ");
+        Serial.print(input_PWM1);
+        Serial.print(", ");
+        Serial.print(target_frequency2);
+        Serial.print(", ");
+        Serial.print(frequency2);
+        Serial.print(", ");
+        Serial.print(input_PWM2);
+        Serial.print(", ");
+        Serial.print(target_phase_offset);
+        Serial.print(", ");
+        Serial.print(phase_error_degrees);
+        print_flag = 0;
+      }
+    } else if (print_for_gui) {
+      if (millis() % PRINT_TIME == 30) {
+        Serial.print(frequency1);
+        Serial.print(", ");
+        Serial.print(frequency2);
+        Serial.print(", ");
+        if (val1 == val2) {
+          Serial.print(phase_error_degrees);
+        } else {
+          Serial.print("-");
+        }
+        
+      }
     }
   }
 }
