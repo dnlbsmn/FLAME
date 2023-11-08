@@ -61,7 +61,7 @@ class MyFrame(wx.Frame):
         self.lock = False
         
         # Start reader thread
-        self.serial_cfg = {'port': 'COM7', 'baudrate': 9600}
+        self.serial_cfg = {'port': '/dev/ttyUSB0', 'baudrate': 9600}
         self.ser_rd = serial_reader(callback=self.on_serial)
         self.ser_rd.start_reader(self.serial_cfg)
 
@@ -70,7 +70,7 @@ class MyFrame(wx.Frame):
 
     # Setup window layout
     def init_gui(self):
-        super().__init__(parent=None, title='Canopy control', size=(430, 200))
+        super().__init__(parent=None, title='Canopy control', size=(500, 250))#size=(430, 200))
         self.panel = wx.Panel(self)       
         self.init_col1()
         self.init_col2()
@@ -157,8 +157,8 @@ class MyFrame(wx.Frame):
         self.col_3_sizer.Add(l1_label1, 0, wx.EXPAND|wx.CENTER|wx.ALL,6)
 
         # increment buttons 
-        for btn_params in [['^', "f1_increase", wx.TOP], ['v', "f1_decrease", wx.BOTTOM], ['^', "f2_increase", wx.TOP], ['v', "f2_decrease", wx.BOTTOM], ['^', "po_increase", wx.TOP], ['v', "po_decrease", wx.BOTTOM]]:
-            btn = wx.Button(self.panel, label=btn_params[0], size=(25, 14))
+        for btn_params in [['+', "f1_increase", wx.TOP], ['-', "f1_decrease", wx.BOTTOM], ['+', "f2_increase", wx.TOP], ['-', "f2_decrease", wx.BOTTOM], ['+', "po_increase", wx.TOP], ['-', "po_decrease", wx.BOTTOM]]:
+            btn = wx.Button(self.panel, label=btn_params[0], size=(35, 16))
             btn.Bind(wx.EVT_BUTTON, lambda evt, temp=btn_params[1]: self.increment_buttons(evt, temp))
             self.col_3_sizer.Add(btn, 0, btn_params[2], 2)
 
@@ -182,7 +182,7 @@ class MyFrame(wx.Frame):
         self.phase_offset_val = wx.TextCtrl(self.panel, value = "0", style = wx.TE_READONLY|wx.TE_CENTER) 
         self.col_4_sizer.Add(self.phase_offset_val,1,wx.EXPAND|wx.ALIGN_LEFT|wx.ALL,5) 
 
-        # Stop btn
+        # # Stop btn
         self.stop_btn = wx.Button(self.panel, label='Stop',)
         self.stop_btn.Bind(wx.EVT_BUTTON, self.on_press_stop)
         self.col_4_sizer.Add(self.stop_btn, 0, wx.ALL, 5,)
@@ -255,18 +255,18 @@ class MyFrame(wx.Frame):
             if self.check_if_in_range(str(float(self.po)-15), 0, 360):
                 self.po = str(round(float(self.po)-15, 1))
         
-        self.frequency1_set.SetLabel(self.f1)
-        self.frequency2_set.SetLabel(self.f2)
-        self.phase_offset_set.SetLabel(self.po)
+        self.frequency1_set.SetValue(self.f1)
+        self.frequency2_set.SetValue(self.f2)
+        self.phase_offset_set.SetValue(self.po)
 
     # Callback for recieving message from serial
     def on_serial(self, text):
         # Update encoder readings
         a = text.split(',')
         if (len(a) == 3):
-            self.frequency1_val.SetLabel(a[0])
-            self.frequency2_val.SetLabel(a[1])
-            self.phase_offset_val.SetLabel(a[2])
+            self.frequency1_val.SetValue(a[0])
+            self.frequency2_val.SetValue(a[1])
+            self.phase_offset_val.SetValue(a[2])
 
     # Callback for closing the window
     def on_close(self, evt):
