@@ -75,7 +75,7 @@ class MyFrame(wx.Frame):
 
     # Setup window layout
     def init_gui(self):
-        super().__init__(parent=None, title='Canopy control', size=(620, 200))#size=(430, 200))
+        super().__init__(parent=None, title='Canopy control', size=(620, 200))
         self.panel = wx.Panel(self, wx.ID_ANY)      
         self.big_sizer = wx.BoxSizer(wx.HORIZONTAL)  
         self.init_col1()
@@ -90,7 +90,7 @@ class MyFrame(wx.Frame):
 
         self.init_col5()
     
-        self.panel.SetSizer(self.big_sizer)       
+        self.panel.SetSizer(self.big_sizer)     
         self.Show()
 
     # Define Labels column
@@ -204,7 +204,7 @@ class MyFrame(wx.Frame):
 
         for theta in range(0, 2000):
             phase_a = (theta*math.pi/100)*target_frequency_a
-            phase_b = (theta*math.pi/100 + initial_phase_offset)*target_frequency_b
+            phase_b = (theta*math.pi/100)*target_frequency_b  + initial_phase_offset
             # if (target_frequency_a > 0):
             #     phase_b = (theta*math.pi/100 + initial_phase_offset) * (target_frequency_b/target_frequency_a)
             # else:
@@ -241,16 +241,20 @@ class MyFrame(wx.Frame):
         self.canvas.Draw(profile, xAxis=(xmin, xmax), yAxis=(ymin, ymax))
 
     def init_col5(self):
-        # self.col_5_sizer = wx.BoxSizer(wx.VERTICAL)
+        self.col_5_sizer = wx.BoxSizer(wx.VERTICAL)
 
         # Title Line
-        # l1_label1 = wx.StaticText(self.panel, -1, "Encoder readings") 
-        # self.col_5_sizer.Add(l1_label1, 0, wx.ALL, 5)
+        l1_label1 = wx.StaticText(self.panel, -1, "Encoder readings") 
+        self.col_5_sizer.Add(l1_label1, 0, wx.ALL, 5)
 
         self.canvas = PlotCanvas(self.panel)
+        self.canvas.enableGrid = False
+        self.canvas.ySpec = 'none'
+        self.canvas.xSpec = 'none'
+        self.canvas.SetBackgroundColour(self.panel.GetBackgroundColour())
         self.update_motion_profile(0, 0, 0)
 
-        self.big_sizer.Add(self.canvas, 100, wx.EXPAND, 5)
+        self.big_sizer.Add(self.canvas, 1, wx.EXPAND | wx.ALL, 5)
 
     # Get value of static text for phase offset
     def po_event(self, event):
