@@ -26,6 +26,11 @@ from geometry_msgs.msg import Pose
 from geometry_msgs.msg import Point
 from geometry_msgs.msg import PointStamped
 
+# Import filterpy
+from filterpy.kalman import KalmanFilter
+from scipy.linalg import block_diag
+from filterpy.common import Q_discrete_white_noise
+
 # Import all the other bits
 import rtdeState
 
@@ -1129,3 +1134,633 @@ class crystal_ball:
             self.gen_fruit_pos()
             future_pos, sim = self.send_delayed()
             return future_pos, sim
+
+class motion_estimation:
+    ### BASIC INTERFACING ###
+    def __init__(self):
+        # self.kf = self.kalman_filter_interpolation()
+        self.kf = self.kalman_filter_filterpy()
+
+    # Turning on and connecting up all the components
+    def turn_on(self):
+        # Starting up the input and output nodes of the system
+        self.point_pub = rospy.Publisher("flame/predicted_position", Point, queue_size = 1)
+        self.point_sub = rospy.Subscriber("/flame/perceived_position", PointStamped, self.predict_position)
+
+        self.on = True
+
+    # Closing down the system cleanly
+    def turn_off(self):
+        # Disconnecting all the cables
+        self.point_pub.unregister()
+        self.point_sub.unregister()
+
+        self.on = False
+
+    def predict_position(self, data: PointStamped):
+        position = data.point
+        measurement = np.matrix([[position.x], [position.y], [position.z]])
+        # measurement  = [position.x, position.y, position.z]
+        pos = self.kf.run_filter(measurement)
+        self.publish(pos[:3])
+
+    def publish(self, pos):
+        predicted_point = Point()
+
+        print("Published position, ",pos)
+
+        predicted_point.x = pos[0]
+        predicted_point.y = pos[1]
+        predicted_point.z = pos[2]
+        
+        self.point_pub.publish(predicted_point)
+    
+    class kalman_filter_stationary:
+        def __init__(self):
+            # Initial guess
+            self.state_vector = np.matrix([[0.5], [0.5], [0.5]]) #XYZ
+            self.covariance_matrix = np.matrix([[1, 0, 0], [0, 1, 0], [0, 0, 1]]) 
+
+            # Measure step
+            #self.measurement_noise_vector - unsure what this should be
+            self.measurement_noise_covariance_matrix = np.matrix([[0.1, 0, 0], [0, 0.1, 0], [0, 0, 0.002]])
+            self.process_noise = np.matrix([[0.1, 0, 0], [0, 0.1, 0], [0, 0, 0.1]])
+
+            # Predict step 
+            self.state_transition_matrix = np.identity(3)
+
+            # Update step
+            self.observation_matrix = np.identity(3)
+
+            # File header
+            self.f = open("Kalman_filter_tracking.csv", "w")
+            self.f.write("count,measurement x,measurement y,measurement z,kalman gain x,kalman gain y,kalman gain z,kalman gain sum other,state x,state y,state z,covariance x,covariance y,covariance z,covariance sum other\n")
+            self.f.close()
+            self.count = 0
+
+        def run_filter(self, measurement):
+            self.f = open("Kalman_filter_tracking.csv", "a")
+            self.f.write(str(self.count))
+            self.f.write(',')
+            self.count += 1
+
+            self.measure(measurement)
+            self.update()
+            self.predict()
+            self.f.close()
+            return self.state_vector
+
+        #// HIGH LEVEL FUNCTIONS //#
+        def measure(self, measurement):
+            self.measurement_vector = np.dot(self.observation_matrix, measurement) # + self.measurement_noise_vector
+
+            if True:
+                print("MEASURE")
+                print("measurement, ", measurement)
+                self.f.write(str(measurement[0,0]))
+                self.f.write(',')
+                self.f.write(str(measurement[1,0]))
+                self.f.write(',')
+                self.f.write(str(measurement[2,0]))
+                self.f.write(',')
+            
+        def update(self):
+            self.prev_state_vector = self.state_vector
+            self.prev_covariance_matrix = self.covariance_matrix
+            self.calculate_kalman_gain()
+
+            # Print to file
+            if True:
+                print("UPDATE")
+                print("Kalman gain ", self.kalman_gain)
+                print(self.kalman_gain[1,1])
+                self.f.write(str(self.kalman_gain[0,0]))
+                self.f.write(',')
+                self.f.write(str(self.kalman_gain[1,1]))
+                self.f.write(',')
+                self.f.write(str(self.kalman_gain[2,2]))
+                self.f.write(',')
+                self.f.write(str(self.kalman_gain[0,1] + self.kalman_gain[0,2] + self.kalman_gain[1,0] + self.kalman_gain[1,2] + self.kalman_gain[2,0] + self.kalman_gain[2,1]))
+                self.f.write(',')
+            
+            self.apply_state_update_equation()
+
+            # Print to file
+            if True:
+                print("State update ", self.state_vector)
+                self.f.write(str(self.state_vector[0,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[1,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[2,0]))
+                self.f.write(',')
+
+            self.apply_covariance_update_equation()
+
+            # Print to file
+            if True:
+                print("covariance update ", self.covariance_matrix)
+                self.f.write(str(self.covariance_matrix[0,0]))
+                self.f.write(',')
+                self.f.write(str(self.covariance_matrix[1,1]))
+                self.f.write(',')
+                self.f.write(str(self.covariance_matrix[2,2]))
+                self.f.write(',')
+                self.f.write(str(self.covariance_matrix[0,1] + self.covariance_matrix[0,2] + self.covariance_matrix[1,0] + self.covariance_matrix[1,2] + self.covariance_matrix[2,0] + self.covariance_matrix[2,1]))
+                self.f.write('\n')
+
+
+        def predict(self):
+            print("PREDICT")
+            
+            self.apply_state_extrapolation_equation()
+            print("next state vector ", self.next_state_vector)
+
+            self.apply_covariance_extrapolation()
+            print("next_covariance matrix: ", self.next_covariance_matrix)
+
+        
+        #// MAIN KALMAN FILTER EQUATIONS //#
+        def apply_state_extrapolation_equation(self):
+            # x_n+1 = F * x_n 
+            self.next_state_vector = np.dot(self.state_transition_matrix, self.state_vector)
+
+        def apply_covariance_extrapolation(self):
+            # P_n+1 = F * P_n * F^T + Q
+            self.next_covariance_matrix = np.dot(np.dot(self.state_transition_matrix, self.covariance_matrix), np.transpose(self.state_transition_matrix)) + self.process_noise
+            
+        def apply_state_update_equation(self):
+            # x_n = x_n-1 + Kn * (zn - H * x_n-1)
+            innovation = self.measurement_vector - np.dot(self.observation_matrix, self.prev_state_vector)
+            self.state_vector = self.prev_state_vector + np.dot(self.kalman_gain, innovation)
+
+        def apply_covariance_update_equation(self):
+            # P_n = (I − Kn * H) * P_n−1 * (I − Kn * H)^T + Kn * Rn * Kn^T
+            I_KnH = np.identity(3) - np.dot(self.kalman_gain, self.observation_matrix)
+            I_KnHT = np.transpose(I_KnH)
+            KnRnKnT = np.dot(np.dot(self.kalman_gain, self.measurement_noise_covariance_matrix), np.transpose(self.kalman_gain))
+
+            self.covariance_matrix = np.dot(np.dot(I_KnH, self.covariance_matrix), I_KnHT) + KnRnKnT
+
+        def calculate_kalman_gain(self):
+            # Kn = P_n-1 * HT * (H * P_n−1 * H^T + Rn)^−1
+            PnHT = np.dot(self.prev_covariance_matrix, np.transpose(self.observation_matrix))
+            HPnHT = np.dot(np.dot(self.observation_matrix, self.prev_covariance_matrix), np.transpose(self.observation_matrix))
+            self.kalman_gain = np.dot(PnHT, np.linalg.inv(HPnHT + self.measurement_noise_covariance_matrix))
+
+    class kalman_filter_interpolated:
+        def __init__(self):
+            # Initial guess
+            self.state_vector = np.matrix([[0.5], [0.5], [0.5], [0], [0], [0], [0], [0], [0]]) #XYZX.Y.Z.X..Y..Z..
+            self.previous_measurement = np.asarray(self.state_vector[:3]).flatten()
+            self.previous_velocity = np.asarray(self.state_vector[3:6]).flatten()
+            self.covariance_matrix = np.asmatrix(np.diag([1, 1, 1, 1, 1, 1, 1, 1, 1])) 
+
+            # Measure step
+            # self.measurement_noise_vector = np.asmatrix(np.diag([0.001, 0.001, 0.001, 0.06, 0.06, 0.06, 3, 3, 3]))
+            x_measurement_noise = 0.002
+            y_measurement_noise = 0.002
+            z_measurement_noise = 0.001
+            self.assumed_time_step = 1.0/60
+            self.measurement_noise_covariance_matrix = np.asmatrix(np.diag([x_measurement_noise**2,y_measurement_noise**2, z_measurement_noise**2, 
+                                (x_measurement_noise/self.assumed_time_step)**2, (y_measurement_noise/self.assumed_time_step)**2, (z_measurement_noise/self.assumed_time_step)**2, 
+                                (x_measurement_noise/self.assumed_time_step**2)**2, (y_measurement_noise/self.assumed_time_step**2)**2, (z_measurement_noise/self.assumed_time_step**2)**2]))
+            self.process_noise = np.asmatrix(np.diag([0.001, 0.001, 0.001, 0.06, 0.06, 0.06, 3, 3, 3]))#np.asmatrix(np.diag([0.01, 0.01, 0.01, 0.1, 0.1, 0.1, 0.5, 0.5, 0.5]))
+
+            # Predict step 
+            self.state_transition_matrix = np.asmatrix(np.diag([1, 1, 1, 1, 1, 1, 1, 1, 1])) + np.asmatrix(np.diag([self.assumed_time_step, self.assumed_time_step, self.assumed_time_step, self.assumed_time_step, self.assumed_time_step, self.assumed_time_step], 3)) + np.asmatrix(np.diag([0.5*self.assumed_time_step**2, 0.5*self.assumed_time_step**2, 0.5*self.assumed_time_step**2], 6))
+
+            # Update step
+            self.observation_matrix = np.identity(9)
+
+            # File header
+            self.f = open("Kalman_filter_tracking.csv", "w")
+            self.f.write("count,measurement x,measurement y,measurement z,vx,vy,vz,ax,ay,az,kalman gain x,kalman gain y,kalman gain z,kalman gain sum other,state x,state y,state z,state x.,state y.,state z.,state x..,state y..,state z..,covariance x,covariance y,covariance z,covariance sum other\n")
+            self.f.close()
+            self.count = 0
+
+        def run_filter(self, measurement):
+            self.f = open("Kalman_filter_tracking.csv", "a")
+            self.f.write(str(self.count))
+            self.f.write(',')
+            self.count += 1
+
+            measurement = self.interpolate_measurement(measurement)
+
+            self.measure(measurement)
+            self.update()
+            self.predict()
+            self.f.close()
+            return self.state_vector
+        
+        def interpolate_measurement(self, measurement):
+            m = np.asarray(measurement)
+            dx = float(m[0] - self.previous_measurement[0])
+            dy = float(m[1] - self.previous_measurement[1])
+            dz = float(m[2] - self.previous_measurement[2])
+            dt = self.assumed_time_step
+            vx = dx/dt
+            vy = dy/dt
+            vz = dz/dt
+
+            dvx = float(self.previous_velocity[0] - vx)
+            dvy = float(self.previous_velocity[1] - vy)
+            dvz = float(self.previous_velocity[2] - vz)
+            ax = dvx/dt
+            ay = dvy/dt
+            az = dvz/dt
+            self.previous_measurement = m
+            self.previous_velocity = [vx, vy, vz]
+
+            if True:
+                print("MEASURE")
+                print("measurement, ", measurement)
+                self.f.write(str(measurement[0,0]))
+                self.f.write(',')
+                self.f.write(str(measurement[1,0]))
+                self.f.write(',')
+                self.f.write(str(measurement[2,0]))
+                self.f.write(',')
+                self.f.write(str(vx))
+                self.f.write(',')
+                self.f.write(str(vy))
+                self.f.write(',')
+                self.f.write(str(vz))
+                self.f.write(',')
+                self.f.write(str(ax))
+                self.f.write(',')
+                self.f.write(str(ay))
+                self.f.write(',')
+                self.f.write(str(az))
+                self.f.write(',')
+            
+            return np.asmatrix([[float(m[0])], [float(m[1])], [float(m[2])], [vx], [vy], [vz], [ax], [ay], [az]])
+
+        #// HIGH LEVEL FUNCTIONS //#
+        def measure(self, measurement):
+            self.measurement_vector = np.dot(self.observation_matrix, measurement) #+ self.measurement_noise_vector
+            
+        def update(self):
+            self.prev_state_vector = self.state_vector
+            self.prev_covariance_matrix = self.covariance_matrix
+            self.calculate_kalman_gain()
+
+            # Print to file
+            if True:
+                print("UPDATE")
+                print("Kalman gain ", self.kalman_gain)
+                print(self.kalman_gain[1,1])
+                self.f.write(str(self.kalman_gain[0,0]))
+                self.f.write(',')
+                self.f.write(str(self.kalman_gain[1,1]))
+                self.f.write(',')
+                self.f.write(str(self.kalman_gain[2,2]))
+                self.f.write(',')
+                self.f.write(str(self.kalman_gain[0,1] + self.kalman_gain[0,2] + self.kalman_gain[1,0] + self.kalman_gain[1,2] + self.kalman_gain[2,0] + self.kalman_gain[2,1]))
+                self.f.write(',')
+            
+            self.apply_state_update_equation()
+
+            # Print to file
+            if True:
+                print("State update ", self.state_vector)
+                self.f.write(str(self.state_vector[0,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[1,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[2,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[3,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[4,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[5,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[6,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[7,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[8,0]))
+                self.f.write(',')
+
+            self.apply_covariance_update_equation()
+
+            # Print to file
+            if True:
+                print("covariance update ", self.covariance_matrix)
+                self.f.write(str(self.covariance_matrix[0,0]))
+                self.f.write(',')
+                self.f.write(str(self.covariance_matrix[1,1]))
+                self.f.write(',')
+                self.f.write(str(self.covariance_matrix[2,2]))
+                self.f.write(',')
+                self.f.write(str(self.covariance_matrix[0,1] + self.covariance_matrix[0,2] + self.covariance_matrix[1,0] + self.covariance_matrix[1,2] + self.covariance_matrix[2,0] + self.covariance_matrix[2,1]))
+                self.f.write('\n')
+
+
+        def predict(self):
+            print("PREDICT")
+            
+            self.apply_state_extrapolation_equation()
+            print("next state vector ", self.next_state_vector)
+
+            self.apply_covariance_extrapolation()
+            print("next_covariance matrix: ", self.next_covariance_matrix)
+
+        
+        #// MAIN KALMAN FILTER EQUATIONS //#
+        def apply_state_extrapolation_equation(self):
+            # x_n+1 = F * x_n 
+            self.next_state_vector = np.dot(self.state_transition_matrix, self.state_vector)
+
+        def apply_covariance_extrapolation(self):
+            # P_n+1 = F * P_n * F^T + Q
+            self.next_covariance_matrix = np.dot(np.dot(self.state_transition_matrix, self.covariance_matrix), np.transpose(self.state_transition_matrix)) + self.process_noise
+            
+        def apply_state_update_equation(self):
+            # x_n = x_n-1 + Kn * (zn - H * x_n-1)
+            innovation = self.measurement_vector - np.dot(self.observation_matrix, self.prev_state_vector)
+            self.state_vector = self.prev_state_vector + np.dot(self.kalman_gain, innovation)
+
+        def apply_covariance_update_equation(self):
+            # P_n = (I − Kn * H) * P_n−1 * (I − Kn * H)^T + Kn * Rn * Kn^T
+            I_KnH = np.identity(9) - np.dot(self.kalman_gain, self.observation_matrix)
+            I_KnHT = np.transpose(I_KnH)
+            KnRnKnT = np.dot(np.dot(self.kalman_gain, self.measurement_noise_covariance_matrix), np.transpose(self.kalman_gain))
+
+            self.covariance_matrix = np.dot(np.dot(I_KnH, self.covariance_matrix), I_KnHT) + KnRnKnT
+
+        def calculate_kalman_gain(self):
+            # Kn = P_n-1 * HT * (H * P_n−1 * H^T + Rn)^−1
+            PnHT = np.dot(self.prev_covariance_matrix, np.transpose(self.observation_matrix))
+            HPnHT = np.dot(np.dot(self.observation_matrix, self.prev_covariance_matrix), np.transpose(self.observation_matrix))
+            self.kalman_gain = np.dot(PnHT, np.linalg.inv(HPnHT + self.measurement_noise_covariance_matrix))
+
+    class kalman_filter_position:
+        def __init__(self):
+            # Initial guess
+            self.state_vector = np.matrix([[0.5], [0.5], [0.5], [0], [0], [0], [0], [0], [0]]) #XYZX.Y.Z.X..Y..Z..
+            self.previous_measurement = np.asarray(self.state_vector[:3]).flatten()
+            self.previous_velocity = np.asarray(self.state_vector[3:6]).flatten()
+            self.covariance_matrix = np.asmatrix(np.diag([1, 1, 1, 1, 1, 1, 1, 1, 1])) 
+
+            # Measure step
+            # self.measurement_noise_vector = np.asmatrix(np.diag([0.001, 0.001, 0.001, 0.06, 0.06, 0.06, 3, 3, 3]))
+            x_measurement_noise = 0.002
+            y_measurement_noise = 0.002
+            z_measurement_noise = 0.001
+            self.assumed_time_step = 1/60
+            self.measurement_noise_covariance_matrix = np.asmatrix(np.diag([x_measurement_noise**2,y_measurement_noise**2, z_measurement_noise**2, 
+                                (x_measurement_noise/self.assumed_time_step)**2, (y_measurement_noise/self.assumed_time_step)**2, (z_measurement_noise/self.assumed_time_step)**2, 
+                                (x_measurement_noise/self.assumed_time_step**2)**2, (y_measurement_noise/self.assumed_time_step**2)**2, (z_measurement_noise/self.assumed_time_step**2)**2]))
+            self.process_noise = np.asmatrix(np.diag([0.001, 0.001, 0.001, 0.06, 0.06, 0.06, 3, 3, 3]))#np.asmatrix(np.diag([0.01, 0.01, 0.01, 0.1, 0.1, 0.1, 0.5, 0.5, 0.5]))
+
+            # Predict step 
+            self.state_transition_matrix = np.asmatrix(np.diag([1, 1, 1, 1, 1, 1, 1, 1, 1])) + np.asmatrix(np.diag([self.assumed_time_step, self.assumed_time_step, self.assumed_time_step, self.assumed_time_step, self.assumed_time_step, self.assumed_time_step], 3)) + np.asmatrix(np.diag([0.5*self.assumed_time_step**2, 0.5*self.assumed_time_step**2, 0.5*self.assumed_time_step**2], 6))
+
+            # Update step
+            # self.observation_matrix = np.asmatrix([[1, 0, 0, 0, 0, 0, 0, 0, 0], 
+            #                            [0, 1, 0, 0, 0, 0, 0, 0, 0],
+            #                            [0, 0, 1, 0, 0, 0, 0, 0, 0]])
+            
+            self.observation_matrix = np.asmatrix([[1, 0, 0], 
+                                       [0, 1, 0],
+                                       [0, 0, 1],
+                                       [0, 0, 0],
+                                       [0, 0, 0],
+                                       [0, 0, 0],
+                                       [0, 0, 0],
+                                       [0, 0, 0],
+                                       [0, 0, 0]])
+
+            # File header
+            self.f = open("Kalman_filter_tracking.csv", "w")
+            self.f.write("count,measurement x,measurement y,measurement z,kalman gain x,kalman gain y,kalman gain z,kalman gain sum other,state x,state y,state z,state x.,state y.,state z.,state x..,state y..,state z..,covariance x,covariance y,covariance z,covariance sum other\n")
+            self.f.close()
+            self.count = 0
+
+        def run_filter(self, measurement):
+            self.f = open("Kalman_filter_tracking.csv", "a")
+            self.f.write(str(self.count))
+            self.f.write(',')
+            self.count += 1
+
+            self.measure(measurement)
+            self.update()
+            self.predict()
+            self.f.close()
+            return self.state_vector
+
+        #// HIGH LEVEL FUNCTIONS //#
+        def measure(self, measurement):
+
+            print(measurement.shape)
+            self.measurement_vector = self.observation_matrix @ measurement#+ self.measurement_noise_vector
+
+            if True:
+                print("MEASURE")
+                self.f.write(str(self.measurement_vector[0,0]))
+                self.f.write(',')
+                self.f.write(str(self.measurement_vector[1,0]))
+                self.f.write(',')
+                self.f.write(str(self.measurement_vector[2,0]))
+                self.f.write(',')
+            
+        def update(self):
+            self.prev_state_vector = self.state_vector
+            self.prev_covariance_matrix = self.covariance_matrix
+            self.calculate_kalman_gain()
+
+            # Print to file
+            if True:
+                print("UPDATE")
+                print("Kalman gain ", self.kalman_gain)
+                print(self.kalman_gain[1,1])
+                self.f.write(str(self.kalman_gain[0,0]))
+                self.f.write(',')
+                self.f.write(str(self.kalman_gain[1,1]))
+                self.f.write(',')
+                self.f.write(str(self.kalman_gain[2,2]))
+                self.f.write(',')
+                self.f.write(str(self.kalman_gain[0,1] + self.kalman_gain[0,2] + self.kalman_gain[1,0] + self.kalman_gain[1,2] + self.kalman_gain[2,0] + self.kalman_gain[2,1]))
+                self.f.write(',')
+            
+            self.apply_state_update_equation()
+
+            # Print to file
+            if True:
+                print("State update ", self.state_vector)
+                self.f.write(str(self.state_vector[0,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[1,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[2,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[3,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[4,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[5,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[6,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[7,0]))
+                self.f.write(',')
+                self.f.write(str(self.state_vector[8,0]))
+                self.f.write(',')
+
+            self.apply_covariance_update_equation()
+
+            # Print to file
+            if True:
+                print("covariance update ", self.covariance_matrix)
+                self.f.write(str(self.covariance_matrix[0,0]))
+                self.f.write(',')
+                self.f.write(str(self.covariance_matrix[1,1]))
+                self.f.write(',')
+                self.f.write(str(self.covariance_matrix[2,2]))
+                self.f.write(',')
+                self.f.write(str(self.covariance_matrix[0,1] + self.covariance_matrix[0,2] + self.covariance_matrix[1,0] + self.covariance_matrix[1,2] + self.covariance_matrix[2,0] + self.covariance_matrix[2,1]))
+                self.f.write('\n')
+
+
+        def predict(self):
+            print("PREDICT")
+            
+            self.apply_state_extrapolation_equation()
+            print("next state vector ", self.next_state_vector)
+
+            self.apply_covariance_extrapolation()
+            print("next_covariance matrix: ", self.next_covariance_matrix)
+
+        
+        #// MAIN KALMAN FILTER EQUATIONS //#
+        def apply_state_extrapolation_equation(self):
+            # x_n+1 = F * x_n 
+            self.next_state_vector = np.dot(self.state_transition_matrix, self.state_vector)
+
+        def apply_covariance_extrapolation(self):
+            # P_n+1 = F * P_n * F^T + Q
+            self.next_covariance_matrix = np.dot(np.dot(self.state_transition_matrix, self.covariance_matrix), np.transpose(self.state_transition_matrix)) + self.process_noise
+            
+        def apply_state_update_equation(self):
+            # x_n = x_n-1 + Kn * (zn - H * x_n-1)
+            innovation = self.measurement_vector - np.dot(self.observation_matrix, self.prev_state_vector)
+            self.state_vector = self.prev_state_vector + np.dot(self.kalman_gain, innovation)
+
+        def apply_covariance_update_equation(self):
+            # P_n = (I − Kn * H) * P_n−1 * (I − Kn * H)^T + Kn * Rn * Kn^T
+            I_KnH = np.identity(9) - np.dot(self.kalman_gain, self.observation_matrix)
+            I_KnHT = np.transpose(I_KnH)
+            KnRnKnT = np.dot(np.dot(self.kalman_gain, self.measurement_noise_covariance_matrix), np.transpose(self.kalman_gain))
+
+            self.covariance_matrix = np.dot(np.dot(I_KnH, self.covariance_matrix), I_KnHT) + KnRnKnT
+
+        def calculate_kalman_gain(self):
+            # Kn = P_n-1 * HT * (H * P_n−1 * H^T + Rn)^−1
+            PnHT = np.dot(self.prev_covariance_matrix, np.transpose(self.observation_matrix))
+            HPnHT = np.dot(np.dot(self.observation_matrix, self.prev_covariance_matrix), np.transpose(self.observation_matrix))
+            self.kalman_gain = np.dot(PnHT, np.linalg.inv(HPnHT + self.measurement_noise_covariance_matrix))
+
+    class kalman_filter_filterpy:
+        def __init__(self):
+            R_std = 0.002
+            Q_std = 0.002
+
+            self.kalmfilt = self.tracker(R_std, Q_std)
+
+            # File header
+            self.f = open("Kalman_filter_tracking.csv", "w")
+            self.f.write("count,measurement x,measurement y,measurement z,kalman gain x,kalman gain y,kalman gain y,state x,state x.,state x..,state y,state y.,state y..,state z,state z.,state z..,outx,outy,outz,covariance x,covariance y,covariance z\n")
+            self.f.close()
+            self.count = 0
+
+        def tracker(self, R_std, Q_std):
+            kf = KalmanFilter(dim_x=9, dim_z=3)
+            dt = 1.0/60   # time step
+
+            kf.F = np.array([[1, dt, 0.5*dt**2, 0, 0, 0, 0, 0, 0], 
+                             [0, 1, dt, 0, 0, 0, 0, 0, 0],
+                             [0, 0, 1, 0, 0, 0, 0, 0, 0],
+                             [0, 0, 0, 1, dt, 0.5*dt**2, 0, 0, 0],
+                             [0, 0, 0, 0, 1, dt, 0, 0, 0],
+                             [0, 0, 0, 0, 0, 1, 0, 0, 0],
+                             [0, 0, 0, 0, 0, 0, 1, dt, 0.5*dt**2],
+                             [0, 0, 0, 0, 0, 0, 0, 1, dt],
+                             [0, 0, 0, 0, 0, 0, 0, 0, 1],])
+            
+            kf.u = 0
+            kf.R = np.eye(3) * R_std**2
+            kf.H = np.array([[1, 0, 0, 0, 0, 0, 0, 0, 0], 
+                            [0, 0, 0, 1, 0, 0, 0, 0, 0],
+                            [0, 0, 0, 0, 0, 0, 1, 0, 0]])
+            kf.Q = Q_discrete_white_noise(3, dt=dt, var=Q_std, block_size=3)
+            kf.x = np.array([[0, 0, 0, 0, 0, 0, 0, 0, 0]]).T
+            kf.P = np.eye(9) * 5.
+            return kf
+            
+        def run_filter(self, measurement):
+            z = np.asarray(measurement)
+            self.kalmfilt.predict()
+            self.kalmfilt.update(z)
+
+            self.print_to_file(measurement)
+            
+            # return output position state
+            return [self.kalmfilt.x[0,0], self.kalmfilt.x[3,0], self.kalmfilt.x[6,0]]
+        
+        def print_to_file(self, measurement):
+            # print("State update ", self.state_vector)
+            self.f = open("Kalman_filter_tracking.csv", "a")
+            self.f.write(str(self.count))
+            self.f.write(',')
+            self.count += 1
+
+            self.f.write(str(measurement[0,0]))
+            self.f.write(',')
+            self.f.write(str(measurement[1,0]))
+            self.f.write(',')
+            self.f.write(str(measurement[2,0]))
+            self.f.write(',')
+
+            self.f.write(str(self.kalmfilt.K[0,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.K[1,1]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.K[2,2]))
+            self.f.write(',')
+
+            self.f.write(str(self.kalmfilt.x[0,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.x[1,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.x[2,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.x[3,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.x[4,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.x[5,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.x[6,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.x[7,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.x[8,0]))
+            self.f.write(',')
+
+            self.f.write(str(self.kalmfilt.P[0,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.P[1,1]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.P[2,2]))
+            self.f.write(',')
+
+            self.f.write(str(self.kalmfilt.y[0,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.y[1,0]))
+            self.f.write(',')
+            self.f.write(str(self.kalmfilt.y[2,0]))
+            self.f.write('\n')
+
+            self.f.close()
