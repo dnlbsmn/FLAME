@@ -55,7 +55,7 @@ if not SIM:
     
 else:
     print("Running simulation")
-    oracle = motion_estimation.particle_filter()
+    oracle = motion_estimation.particle_filter_fewer_states()
     f = open("../Benchmark_data/circular_50_05_train.csv", 'r')
     line = f.readline()
     while(1):
@@ -65,4 +65,4 @@ else:
         # measurement = [0.3, 0.3, 0.2]
         out = oracle.run_filter(measurement)
         # print(out)
-        time.sleep(0.001)
+        time.sleep(0.0001)

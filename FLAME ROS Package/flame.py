@@ -1142,7 +1142,7 @@ class motion_estimation:
     ### BASIC INTERFACING ###
     def __init__(self):
         # self.kf = self.kalman_filter_interpolation()
-        self.kf = self.particle_filter()
+        self.kf = self.particle_filter_fewer_states()
 
     # Turning on and connecting up all the components
     def turn_on(self):
@@ -1603,12 +1603,13 @@ class motion_estimation:
             particles[:, 3] = np.random.uniform(low=0.0, high=2*math.pi, size=N)       #thx
             particles[:, 4] = np.random.uniform(low=0.01, high=0.05, size=N)            #rx
             particles[:, 5] = particles[:, 4]*np.cos(particles[:, 3]) + np.sqrt(self.l**2 - (particles[:, 4]*np.sin(particles[:, 3]) - self.o)**2) - particles[:, 0] #x0
+            print(particles[:, 5])
             particles[:, 6] = np.random.uniform(low=0.0, high=2*math.pi, size=N)       #thy
             particles[:, 7] = np.random.uniform(low=0.01, high=0.05, size=N)            #ry
             particles[:, 8] = particles[:, 7]*np.cos(particles[:, 6]) + np.sqrt(self.l**2 - (particles[:, 7]*np.sin(particles[:, 6]) - self.o)**2) - particles[:, 1] #y0
             particles[:, 9] = np.random.uniform(low=0.0, high=3.0, size=N)       #alpx
             particles[:, 10] = np.random.uniform(low=0.0, high=3.0, size=N)      #alpy
-            particles[:, 11] = np.ones(N)/N
+            particles[:, 11] = np.ones(N)/N #weight
             
             return particles
 
@@ -1620,8 +1621,8 @@ class motion_estimation:
                 mean, var = self.estimate_state()
                 print(mean)
                 self.print_to_file(z, mean)
-                self.predict()
                 self.evaluate(mean, z)
+                self.predict()
             else:
                 print("initial guess", z)
                 self.particles = self.create_gaussian_particles(z, self.N)
@@ -1645,6 +1646,14 @@ class motion_estimation:
             self.particles[:, 6] += self.particles[:, 10]*self.dt                     #thy += alpy
                                                                                                                         # x, y, z,    thx,    rx,   x0,     thy,   ry,  y0,   thx.  thy.
             self.particles[:, :11] = np.multiply(self.particles[:, :11], (1 - (np.multiply(np.random.randn(self.N, 11), [0, 0, 0.001, 0.01, 0.001, 0.02, 0.01, 0.001, 0.02, 0.05, 0.05]))))
+
+            self.constrain_state_vars()
+
+        def constrain_state_vars(self):
+            #x,y,z,thx,rx,x0,thy,ry,y0,thx.,thy.
+            l_bound = [0, 0, 0, 0, 0.04, 0, 0, 0, 0, 0, 0]
+            u_bound = [0.5, 0.5, 0.5, 2*math.pi, 0.08, 1, 2*math.pi, 0.08, 1, 2*math.pi, 2*math.pi]
+            self.particles[:, :11] = np.clip(self.particles[:, :11], l_bound, u_bound)
 
         def neff(self):
             return np.sum(np.square(self.particles[:, 11]))
@@ -1715,6 +1724,8 @@ class motion_estimation:
 
             self.f.write(str(vars[0]))
             self.f.write(',')
+            self.f.write(str(vars[1]))
+            self.f.write(',')
             self.f.write(str(vars[2]))
             self.f.write(',')
             self.f.write(str(vars[3]))
@@ -1735,4 +1746,195 @@ class motion_estimation:
             self.f.write('\n')
             self.f.close()
 
+    class particle_filter_fewer_states:
+        def __init__(self):
+            self.init_flag = 0
+
+            # Number of particles
+            self.N = 100
+            self.dt = 1/60
+            plt.figure()
+            plt.ion()
+
+            # File header
+            self.f = open("Kalman_filter_tracking.csv", "w")
+            self.f.write("count,measurement x,measurement y,measurement z,x,y,z,thx,ax,thy,ay,thx.,thy.\n")
+            self.f.close()
+            self.count = 0
+
+        # Create a gaussian spread of N particles x,y,z,x0,y0,rx,thx,alpx,ry,thy,alpy
+        def create_gaussian_particles(self, z, N):
+            mean = np.asarray(z, dtype='float')
+            std = np.array([0.3, 0.3, 0.2])
+            self.l = 0.38
+            self.o = 0.08
+
+            particles = np.empty((N, 10), dtype='double')
+            particles[:, 0] = float(mean[0]) + (np.random.randn(N) * std[0])      #x
+            particles[:, 1] = float(mean[1]) + (np.random.randn(N) * std[1])      #y
+            particles[:, 2] = float(mean[2]) + (np.random.randn(N) * std[2])      #z
+            particles[:, 3] = np.random.uniform(low=0.0, high=2*math.pi, size=N)       #thx
+            particles[:, 4] = np.random.uniform(low=0.01, high=0.1, size=N)            #ax
+            particles[:, 5] = np.random.uniform(low=0.0, high=2*math.pi, size=N)       #thy
+            particles[:, 6] = np.random.uniform(low=0.01, high=0.1, size=N)            #ay
+            particles[:, 7] = np.random.uniform(low=0.0, high=2*math.pi, size=N)       #alpx
+            particles[:, 8] = np.random.uniform(low=0.0, high=2*math.pi, size=N)      #alpy
+            particles[:, 9] = np.ones(N)/N #weight
+            
+            return particles
+
+        # Defines the process flow of the particle filter
+        def run_filter(self, measurement):
+            z = np.asarray(measurement, dtype='float')
+            if (self.init_flag):
+                # Extrapolate particles to lookahead
+                self.predict_future_pos()
+
+                # Predict one step in the future
+                self.predict()
+
+                # Update position based on measurement
+                mean = self.update(z, 0.005) 
+            else:
+                # Initialise points centred around first reading
+                print("initial guess", z)
+                self.particles = self.create_gaussian_particles(z, self.N)
+                self.init_flag = 1
+                mean = z
+
+            return mean
+
+        def update(self, z, R):
+            self.compute_weights(z, R)
+            mean, var = self.estimate_state(self.particles)
+            
+            print(f"\rx: {mean[0]:.4f} y: {mean[1]:.4f} z: {mean[2]:.4f} thx {mean[3]:.2f} ax {mean[4]:.4f} thy: {mean[5]:.2f} ay: {mean[6]:.4f} thx. {mean[7]:.3f} thy. {mean[8]:.3f}", end=" ")
+            self.print_to_file(z, mean)
+            self.plot(z, mean, self.particles, 'blue', 'red', 0)
+
+            self.resample()
+            self.fluff_particles()
+            return mean
+
+        def compute_weights(self, z, R):
+            distance = np.linalg.norm(self.particles[:, 0:3] - z, axis=1)
+            self.particles[:, 9] *= scipy.stats.norm(loc=0, scale=math.sqrt(3*(R**2))).pdf(distance)**2
+            self.particles[:, 9] += 1.e-300 # avoid round-off to zero
+            # self.accuracy = np.sum(self.particles[:, 9])
+            self.particles[:, 9] /= sum(self.particles[:, 9]) # normalize
+
+        def predict_future_pos(self):
+            prediction = self.extrapolate_state(0.3)
+            m,v = self.estimate_state(prediction)
+            self.plot([0, 0, 0], m, prediction, 'green', 'orange', 1)
+
+        def predict(self):
+            self.particles = self.extrapolate_state(1/60)
+            self.constrain_state_variables()
+
+        def extrapolate_state(self, time):
+            future_particles = np.copy(self.particles)
+            ax = self.particles[:,4]
+            thx = self.particles[:,3]
+            alpx = self.particles[:,7]
+            # x = x + (axcos(thx + dt*thx.) + sqrt(l^2 + axsin(thx + dt*thx.)^2)) - (axsin(thx) + sqrt(l^2 + axsin(thx)^2))
+            future_particles[:,0] = self.particles[:,0] + (ax*np.cos(thx+(time*alpx)) + np.sqrt((self.l**2) + ((ax*np.cos(thx+time*alpx))**2))) - (ax*np.cos(thx) + np.sqrt((self.l**2) + (((ax*np.cos(thx))**2))))
+            ay = self.particles[:,6]
+            thy = self.particles[:,5]
+            alpy = self.particles[:,8]
+            # y = y + (aycos(thy + dt*thy.) + sqrt(l^2 + aysin(thy + dt*thy.)^2)) - (aysin(thy) + sqrt(l^2 + aysin(thy)^2))
+            future_particles[:,1] = self.particles[:,1] + (ay*np.cos(thy+time*alpy) + np.sqrt((self.l**2) + ((ay*np.cos(thy+time*alpy))**2))) - (ay*np.cos(thy) + np.sqrt((self.l**2) + (((ay*np.cos(thy))**2))))
+            future_particles[:, 3] += self.particles[:, 7]*time    #thx += alpx
+            future_particles[:, 5] += self.particles[:, 8]*time    #thy += alpy
+            return future_particles
+
+        def fluff_particles(self):
+                                                                                                                                 # x, y, z,  thx,  ax,    thy,  ay,    thx.  thy.
+            self.particles[:, :9] = np.add(self.particles[:, :9], (np.multiply(np.random.randn(self.N, 9), np.array([0.001, 0.001, 0.002, 0.03, 0.01, 0.03, 0.01, 0.1, 0.1])))) 
+
+        def constrain_state_variables(self):
+            #x,y,z,thx,ax,thy,ay,thx.,thy.
+            self.particles[:, 3] %= math.pi*2
+            self.particles[:, 5] %= math.pi*2
+            l_bound = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+            u_bound = [0.5, 0.5, 0.5, 7, 0.1, 7, 0.1, math.pi*4, math.pi*4]
+            self.particles[:, :9] = np.clip(self.particles[:, :9], l_bound, u_bound)
+
+        # def neff(self):
+        #     return np.sum(np.square(self.particles[:, 9]))
+
+        def resample(self):
+            N = len(self.particles[:, 9])
+            indexes = np.zeros(N, dtype=int)
+            # take int(N*w) copies of each weight
+            w = np.asarray(self.particles[:, 9])
+            num_copies = (N*w).astype(int)
+            k = 0
+            for i in range(N):
+                for _ in range(num_copies[i]): # make n copies
+                    indexes[k] = i
+                    k += 1
+                    
+            # use multinormial resample on the residual to fill up the rest.
+            residual = w - num_copies # get fractional part
+            residual /= sum(residual) # normalize
+            cumulative_sum = np.cumsum(residual)
+            cumulative_sum[-1] = 1. # ensures sum is exactly one
+            indexes[k:N] = np.searchsorted(cumulative_sum, np.random.random(N-k))
+
+            self.particles[:] = self.particles[indexes]
+
+        def estimate_state(self, particles):
+            """returns mean and variance of the weighted particles"""
+            pos = particles[:, :9]
+            mean = np.average(pos, weights=particles[:, 9], axis=0)
+            var = np.average((pos - mean)**2, weights=particles[:, 9], axis=0)
+            return mean, var
+
+        def plot(self, z, pos, particles, col1, col2, clf):
+            if clf: plt.clf()
+            plt.scatter(particles[:, 0], particles[:, 1], label='Particles', color=col1, alpha=(particles[:, 9]/np.max(particles[:, 9])))
+            plt.scatter(pos[0], pos[1], label='Estimate', color=col2)
+            plt.scatter(z[0], z[1], label='Estimate', color='black')
+
+            plt.xlim(0.25, 0.45)
+            plt.ylim(0.2, 0.4)
+            plt.xlabel('X')
+            plt.ylabel('Y')
+            plt.title('Particle Positions')
+            plt.show()
+            plt.pause(0.01)
+
+        def print_to_file(self, measurement, means):
+            self.f = open("Kalman_filter_tracking.csv", "a")
+            self.f.write(str(self.count))
+            self.f.write(',')
+            self.count += 1
+
+            self.f.write(str(measurement[0]))
+            self.f.write(',')
+            self.f.write(str(measurement[1]))
+            self.f.write(',')
+            self.f.write(str(measurement[2]))
+            self.f.write(',')
+
+            self.f.write(str(means[0]))
+            self.f.write(',')
+            self.f.write(str(means[1]))
+            self.f.write(',')
+            self.f.write(str(means[2]))
+            self.f.write(',')
+            self.f.write(str(means[3]))
+            self.f.write(',')
+            self.f.write(str(means[4]))
+            self.f.write(',')
+            self.f.write(str(means[5]))
+            self.f.write(',')
+            self.f.write(str(means[6]))
+            self.f.write(',')
+            self.f.write(str(means[7]))
+            self.f.write(',')
+            self.f.write(str(means[8]))
+            self.f.write('\n')
+            self.f.close()
 
