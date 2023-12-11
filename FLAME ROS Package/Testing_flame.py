@@ -56,7 +56,7 @@ if not SIM:
 else:
     print("Running simulation")
     oracle = motion_estimation.particle_filter_fewer_states()
-    f = open("../Benchmark_data/circular_50_05_train.csv", 'r')
+    f = open("../Benchmark_data/linear_50_10_train.csv", 'r')
     line = f.readline()
     while(1):
         line = f.readline()

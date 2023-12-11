@@ -1750,9 +1750,15 @@ class motion_estimation:
         def __init__(self):
             self.init_flag = 0
 
-            # Number of particles
-            self.N = 100
+            # Tuning
+            self.N = 2000
             self.dt = 1/60
+            self.R = 0.005
+                                       # x,     y,      z,      thx,    ax,     thy,    ay,     thx.    thy.
+            self.fluff_array = np.array([0.0005,0.0005, 0.002,  0.3,    0.002,  0.3,    0.002,  0.1,   0.1])
+            self.show_future_prediction = True
+            self.show_current_state_estimation = True
+
             plt.figure()
             plt.ion()
 
@@ -1761,6 +1767,26 @@ class motion_estimation:
             self.f.write("count,measurement x,measurement y,measurement z,x,y,z,thx,ax,thy,ay,thx.,thy.\n")
             self.f.close()
             self.count = 0
+
+            # Create a window
+            cv.namedWindow("Particle_Filter_Tuning")
+            cv.resizeWindow("Particle_Filter_Tuning", 100, 200)
+
+            labels = ["x", "y", "z", "thx", "ax", "thy", "ay", "thx.", "thy."]
+            # lower = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+            # upper = [0.1, 0.1, 0.1, 1, 0.5, 1, 0.5, 1, 1]
+
+            # Create trackbars for each element in fluff_array
+            for i, value in enumerate(self.fluff_array):
+                trackbar_name =  labels[i]
+                cv.createTrackbar(trackbar_name, "Particle_Filter_Tuning", int(value * 1000), 1000, lambda val, idx=i: self.update_fluff_array(val, idx))
+
+            
+
+        def update_fluff_array(self, value, index):
+            normalized_value = float(value) / 1000.0
+            self.fluff_array[index] = normalized_value
+            # print("Updated fluff_array:", self.fluff_array)
 
         # Create a gaussian spread of N particles x,y,z,x0,y0,rx,thx,alpx,ry,thy,alpy
         def create_gaussian_particles(self, z, N):
@@ -1788,13 +1814,14 @@ class motion_estimation:
             z = np.asarray(measurement, dtype='float')
             if (self.init_flag):
                 # Extrapolate particles to lookahead
-                self.predict_future_pos()
+                if self.show_future_prediction:
+                    self.predict_lookahead(0.3)
 
                 # Predict one step in the future
                 self.predict()
 
                 # Update position based on measurement
-                mean = self.update(z, 0.005) 
+                mean = self.update(z, self.R) 
             else:
                 # Initialise points centred around first reading
                 print("initial guess", z)
@@ -1803,6 +1830,16 @@ class motion_estimation:
                 mean = z
 
             return mean
+        
+        def predict_lookahead(self, lookahead):
+            prediction = self.extrapolate_state(lookahead)
+            m,v = self.estimate_state(prediction)
+            self.plot(prediction[:, 0], prediction[:, 1], prediction[:, 9], 'green', 1)
+            self.plot(m[0], m[1], 1, 'orange', 0)
+
+        def predict(self):
+            self.particles = self.extrapolate_state(1/60)
+            self.constrain_state_variables()
 
         def update(self, z, R):
             self.compute_weights(z, R)
@@ -1810,10 +1847,16 @@ class motion_estimation:
             
             print(f"\rx: {mean[0]:.4f} y: {mean[1]:.4f} z: {mean[2]:.4f} thx {mean[3]:.2f} ax {mean[4]:.4f} thy: {mean[5]:.2f} ay: {mean[6]:.4f} thx. {mean[7]:.3f} thy. {mean[8]:.3f}", end=" ")
             self.print_to_file(z, mean)
-            self.plot(z, mean, self.particles, 'blue', 'red', 0)
 
             self.resample()
             self.fluff_particles()
+            
+            if self.show_current_state_estimation:
+                self.plot(self.particles[:, 0], self.particles[:, 1], self.particles[:, 9], 'blue', not self.show_future_prediction)
+                self.plot(mean[0], mean[1], 1, 'red', 0)
+            self.plot(z[0], z[1], 1, 'black', 0)
+            self.show_plot()
+
             return mean
 
         def compute_weights(self, z, R):
@@ -1822,15 +1865,6 @@ class motion_estimation:
             self.particles[:, 9] += 1.e-300 # avoid round-off to zero
             # self.accuracy = np.sum(self.particles[:, 9])
             self.particles[:, 9] /= sum(self.particles[:, 9]) # normalize
-
-        def predict_future_pos(self):
-            prediction = self.extrapolate_state(0.3)
-            m,v = self.estimate_state(prediction)
-            self.plot([0, 0, 0], m, prediction, 'green', 'orange', 1)
-
-        def predict(self):
-            self.particles = self.extrapolate_state(1/60)
-            self.constrain_state_variables()
 
         def extrapolate_state(self, time):
             future_particles = np.copy(self.particles)
@@ -1849,19 +1883,15 @@ class motion_estimation:
             return future_particles
 
         def fluff_particles(self):
-                                                                                                                                 # x, y, z,  thx,  ax,    thy,  ay,    thx.  thy.
-            self.particles[:, :9] = np.add(self.particles[:, :9], (np.multiply(np.random.randn(self.N, 9), np.array([0.001, 0.001, 0.002, 0.03, 0.01, 0.03, 0.01, 0.1, 0.1])))) 
+            self.particles[:, :9] = np.add(self.particles[:, :9], (np.multiply(np.random.randn(self.N, 9), self.fluff_array))) 
 
         def constrain_state_variables(self):
             #x,y,z,thx,ax,thy,ay,thx.,thy.
             self.particles[:, 3] %= math.pi*2
             self.particles[:, 5] %= math.pi*2
             l_bound = [0, 0, 0, 0, 0, 0, 0, 0, 0]
-            u_bound = [0.5, 0.5, 0.5, 7, 0.1, 7, 0.1, math.pi*4, math.pi*4]
+            u_bound = [0.5, 0.5, 0.5, 10, 0.1, 10, 0.1, math.pi*6, math.pi*6]
             self.particles[:, :9] = np.clip(self.particles[:, :9], l_bound, u_bound)
-
-        # def neff(self):
-        #     return np.sum(np.square(self.particles[:, 9]))
 
         def resample(self):
             N = len(self.particles[:, 9])
@@ -1885,18 +1915,16 @@ class motion_estimation:
             self.particles[:] = self.particles[indexes]
 
         def estimate_state(self, particles):
-            """returns mean and variance of the weighted particles"""
             pos = particles[:, :9]
             mean = np.average(pos, weights=particles[:, 9], axis=0)
             var = np.average((pos - mean)**2, weights=particles[:, 9], axis=0)
             return mean, var
 
-        def plot(self, z, pos, particles, col1, col2, clf):
+        def plot(self, x_data, y_data, weights, colour, clf):
             if clf: plt.clf()
-            plt.scatter(particles[:, 0], particles[:, 1], label='Particles', color=col1, alpha=(particles[:, 9]/np.max(particles[:, 9])))
-            plt.scatter(pos[0], pos[1], label='Estimate', color=col2)
-            plt.scatter(z[0], z[1], label='Estimate', color='black')
+            plt.scatter(x_data, y_data, label='Particles', color=colour, alpha=(weights/np.max(weights)))
 
+        def show_plot(self):
             plt.xlim(0.25, 0.45)
             plt.ylim(0.2, 0.4)
             plt.xlabel('X')
@@ -1937,4 +1965,5 @@ class motion_estimation:
             self.f.write(str(means[8]))
             self.f.write('\n')
             self.f.close()
+
 
