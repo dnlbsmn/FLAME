@@ -679,8 +679,14 @@ class nerian:
 
         return fruit_locations
 
-# Defining a object that takes a stream of timestamped positions and predicts the next prediction
+# Defining an object that takes a stream of timestamped positions and predicts the next prediction
 class crystal_ball:
+    '''
+    This class handles the prediction of kiwifruit position to account for the system latency.
+    This class performs the same functionality as the 'motion_prediction' class, 
+    it is recommended to use 'motion_prediction.'
+    '''
+
     ### BASIC INTERFACING ###
     # Turning on and connecting up all the components
     def turn_on(self):
@@ -1138,11 +1144,23 @@ class crystal_ball:
             future_pos, sim = self.send_delayed()
             return future_pos, sim
 
+# Defining an alternative object that takes a stream of timestamped positions and predicts the next prediction
 class motion_estimation:
+    '''
+    This class handles the prediction of kiwifruit position to account for the system latency
+    using variations of kalman filters or particle filters.
+    This class has similar functionality to the 'crystal_ball' class.
+    '''
     ### BASIC INTERFACING ###
-    def __init__(self):
-        # self.kf = self.kalman_filter_interpolation()
-        self.kf = self.particle_filter_fewer_states()
+    def __init__(self, estimation_method):
+        if estimation_method == 'particle filter 1':
+            self.kf = self.particle_filter()
+        elif estimation_method == 'particle filter 2':
+            self.kf = self.particle_filter_fewer_states()
+        elif estimation_method == 'kalman filter 1':
+            self.kf = self.kalman_filter_constant_acceleration()
+        elif estimation_method == 'kalman filter 2':
+            self.kf = self.kalman_filter_cranks_EKF()
 
     # Turning on and connecting up all the components
     def turn_on(self):
@@ -1163,15 +1181,11 @@ class motion_estimation:
     def predict_position(self, data: PointStamped):
         position = data.point
         measurement = np.matrix([[position.x], [position.y], [position.z]])
-        # measurement  = [position.x, position.y, position.z]
-        pos = self.kf.run_filter(measurement)
+        pos = self.kf.run_filter(measurement, 0)
         self.publish(pos[:3])
 
     def publish(self, pos):
         predicted_point = Point()
-
-        # print("Published position, ",pos)
-
         predicted_point.x = pos[0]
         predicted_point.y = pos[1]
         predicted_point.z = pos[2]
@@ -1179,6 +1193,12 @@ class motion_estimation:
         self.point_pub.publish(predicted_point)
     
     class kalman_filter_constant_acceleration:
+        '''
+        This class uses a kalman filter to predict the position of the kiwifruit.
+        The filter assumes a constant acceleration model and does not model the real motion well.
+        This filter does not work in simulation.
+        '''
+        
         def __init__(self):
             R_std = 0.002
             Q_std = 0.01
@@ -1223,7 +1243,7 @@ class motion_estimation:
             kf.P = np.eye(9) * 5.
             return kf
             
-        def run_filter(self, measurement):
+        def run_filter(self, measurement, SIM):
             z = np.asarray(measurement)
             self.kalmfilt.predict()
             self.kalmfilt.update(z)
@@ -1290,6 +1310,10 @@ class motion_estimation:
             self.f.close()
 
     class kalman_filter_cranks_EKF:
+        '''
+        This filter uses the Extended Kalman Filter to better model the non-linear motion of the kiwifruit.
+        This filter may not work in Simulation
+        '''
         def __init__(self):
             R_std = 0.002
             Q_std = 0.01
@@ -1330,7 +1354,7 @@ class motion_estimation:
             ekf.P = np.eye(11) * 5.
             return ekf
             
-        def run_filter(self, measurement):
+        def run_filter(self, measurement, SIM):
             z = np.asarray(measurement)
             self.kalmfilt.predict()
             self.kalmfilt.update(z, )
@@ -1417,49 +1441,8 @@ class motion_estimation:
             self.f.write('\n')
 
             self.f.close()
-
-    class kalman_filter_library_ext:
-        def __init__(self):
-            R_std = 0.002
-            Q_std = 0.01
-
-            self.crank_offset = 0.08
-            self.length = 0.38
-
-            self.kalmfilt = self.tracker(R_std, Q_std)
-
-            # File header
-            self.f = open("Kalman_filter_tracking.csv", "w")
-            self.f.write("count,measurement x,measurement y,measurement z,kalman gain x,kalman gain y,kalman gain y,x0,x,rx,thx,thx.,y0,y,ry,thy,thy.,z,outx,outy,outz,covariance x,covariance y,covariance z\n")
-            self.f.close()
-            self.count = 0
-
-        def tracker(self, R_std, Q_std):
-            ekf = KalmanFilter(dim_x=11, dim_z=3)
-
-            self.dt = 1.0/60   # time step
-
-            ekf.x = np.array([[0, 0, 0.02, 0, 1, 0, 0, 0.02, 0, 1, 0]]).T
-
-            ekf.F = self.init_F()
             
-            ekf.u = 0
-            ekf.R = np.eye(3) * R_std**2
-            ekf.H = np.array([[0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0], 
-                            [0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]])
-            
-            ekf.Q = np.eye(11) * 0.001 #Q_discrete_white_noise(3, dt=self.dt, var=Q_std, block_size=3)
-
-            # Interesting - inconsistent with sources
-            # q = Q_discrete_white_noise(dim=2, dt=1, var=0.001)
-            # kf.Q=block_diag(q,q)
-            # print("Q:", kf.Q)
-            
-            ekf.P = np.eye(11) * 5.
-            return ekf
-            
-        def run_filter(self, measurement):
+        def run_filter(self, measurement, SIM):
             z = np.asarray(measurement)
             self.kalmfilt.F = self.calculate_F()
             self.kalmfilt.predict()
@@ -1575,6 +1558,10 @@ class motion_estimation:
             self.f.close()
     
     class particle_filter:
+        '''
+        This filter uses a particle filter to model the motion of a kiwifruit and predict its position.
+        This filter works in simulation but has not been implimented on the UR5.
+        '''
         def __init__(self):
             self.init_flag = 0
             self.N = 10000
@@ -1613,7 +1600,7 @@ class motion_estimation:
             
             return particles
 
-        def run_filter(self, measurement):
+        def run_filter(self, measurement, SIM):
             z = np.asarray(measurement, dtype='float')
             if (self.init_flag):
                 R = 0.01
@@ -1747,8 +1734,16 @@ class motion_estimation:
             self.f.close()
 
     class particle_filter_fewer_states:
+        '''
+        This particle filter attempts to model a swinging kiwiruit.
+        This filter works in simulation but is not implimented on the UR5. 
+        '''
         def __init__(self):
             self.init_flag = 0
+
+            self.lookahead = 0.3
+            self.rate = 60
+            self.measurement_pipeline_for_sim = -1*np.ones((int(self.rate*self.lookahead)+1, 3))
 
             # Tuning
             self.N = 2000
@@ -1772,22 +1767,67 @@ class motion_estimation:
             cv.namedWindow("Particle_Filter_Tuning")
             cv.resizeWindow("Particle_Filter_Tuning", 100, 200)
 
-            labels = ["x", "y", "z", "thx", "ax", "thy", "ay", "thx.", "thy."]
-            # lower = [0, 0, 0, 0, 0, 0, 0, 0, 0]
-            # upper = [0.1, 0.1, 0.1, 1, 0.5, 1, 0.5, 1, 1]
+            self.window_limits = [0.25, 0.45, 0.2, 0.4]
 
             # Create trackbars for each element in fluff_array
-            for i, value in enumerate(self.fluff_array):
-                trackbar_name =  labels[i]
-                cv.createTrackbar(trackbar_name, "Particle_Filter_Tuning", int(value * 1000), 1000, lambda val, idx=i: self.update_fluff_array(val, idx))
+            state_labels = ["x", "y", "z", "thx", "ax", "thy", "ay", "thx.", "thy."]
+            self.create_sliders(state_labels, self.fluff_array, 10000.0, "fluff_array")
 
-            
+            # Create trackbars for changing the window limits
+            window_labels = ["x min", "x max", "y min", "y max"]
+            self.create_sliders(window_labels, self.window_limits, 100.0, "window")
 
-        def update_fluff_array(self, value, index):
-            normalized_value = float(value) / 1000.0
-            self.fluff_array[index] = normalized_value
-            # print("Updated fluff_array:", self.fluff_array)
+        # Defines the process flow of the particle filter
+        def run_filter(self, measurement, SIM):
+            if SIM:
+                measurement, future_measurement = self.delay_measurements(np.asarray(measurement, dtype='float'), lookahead=self.lookahead, rate=self.rate)
+            z = np.asarray(measurement, dtype='float')
+            if (self.init_flag):
+                # Extrapolate particles to lookahead
+                if self.show_future_prediction:
+                    self.predict_lookahead(self.lookahead)
+                    if SIM:
+                        self.plot(future_measurement[0], future_measurement[1], 1, "pink", 0)
 
+                # Predict one step in the future
+                self.predict()
+
+                # Update position based on measurement
+                mean = self.update(z, self.R) 
+            elif (SIM) & (measurement[0] == -1):
+                mean = z
+            else:
+                # Initialise points centred around first reading
+                print("\nFilter starting")
+                print("initial guess", z)
+                self.particles = self.create_gaussian_particles(z, self.N)
+                self.init_flag = 1
+                mean = z
+
+            key = cv.waitKey(1) & 0xFF
+            if key == ord('r'):
+                self.init_flag = 0
+            elif key == ord('p'):
+                cv.waitKey(0)
+            elif key == ord('q'):
+                return [-999]
+                
+            return mean
+
+        # Callback for updating state arrays with trackbar
+        def trackbar_callback(self, value, index, norm, arr):
+            normalized_value = float(value) / norm
+            if arr == "window":
+                self.window_limits[index] = normalized_value
+            elif arr == "fluff_array":
+                self.fluff_array[index] = normalized_value
+
+        # Creates a series of sliders for altering kalman filter tuning parameters
+        def create_sliders(self, labels, arr, norm, name):
+            for i, value in enumerate(arr):
+                trackbar_name = labels[i]
+                cv.createTrackbar(trackbar_name, "Particle_Filter_Tuning", int(value*norm), int(norm), lambda val, idx=i: self.trackbar_callback(val, idx, norm, name))
+        
         # Create a gaussian spread of N particles x,y,z,x0,y0,rx,thx,alpx,ry,thy,alpy
         def create_gaussian_particles(self, z, N):
             mean = np.asarray(z, dtype='float')
@@ -1808,28 +1848,13 @@ class motion_estimation:
             particles[:, 9] = np.ones(N)/N #weight
             
             return particles
-
-        # Defines the process flow of the particle filter
-        def run_filter(self, measurement):
-            z = np.asarray(measurement, dtype='float')
-            if (self.init_flag):
-                # Extrapolate particles to lookahead
-                if self.show_future_prediction:
-                    self.predict_lookahead(0.3)
-
-                # Predict one step in the future
-                self.predict()
-
-                # Update position based on measurement
-                mean = self.update(z, self.R) 
-            else:
-                # Initialise points centred around first reading
-                print("initial guess", z)
-                self.particles = self.create_gaussian_particles(z, self.N)
-                self.init_flag = 1
-                mean = z
-
-            return mean
+        
+        # 
+        def delay_measurements(self, measurement, lookahead, rate):
+            len = int(lookahead*rate)
+            self.measurement_pipeline_for_sim = np.roll(self.measurement_pipeline_for_sim, shift=1, axis=0)
+            self.measurement_pipeline_for_sim[0, :] = measurement
+            return self.measurement_pipeline_for_sim[len], measurement
         
         def predict_lookahead(self, lookahead):
             prediction = self.extrapolate_state(lookahead)
@@ -1845,7 +1870,7 @@ class motion_estimation:
             self.compute_weights(z, R)
             mean, var = self.estimate_state(self.particles)
             
-            print(f"\rx: {mean[0]:.4f} y: {mean[1]:.4f} z: {mean[2]:.4f} thx {mean[3]:.2f} ax {mean[4]:.4f} thy: {mean[5]:.2f} ay: {mean[6]:.4f} thx. {mean[7]:.3f} thy. {mean[8]:.3f}", end=" ")
+            print(f"\rx: {mean[0]:.4f},{var[0]:.4f} y: {mean[1]:.4f},{var[1]:.4f} z: {mean[2]:.4f},{var[2]:.4f} thx {mean[3]:.2f},{var[3]:.2f} ax {mean[4]:.4f},{var[4]:.4f} thy: {mean[5]:.2f},{var[5]:.2f} ay: {mean[6]:.4f},{var[6]:.4f} thx. {mean[7]:.3f},{var[7]:.3f} thy. {mean[8]:.3f},{var[8]:.3f}", end=" ")
             self.print_to_file(z, mean)
 
             self.resample()
@@ -1889,7 +1914,7 @@ class motion_estimation:
             #x,y,z,thx,ax,thy,ay,thx.,thy.
             self.particles[:, 3] %= math.pi*2
             self.particles[:, 5] %= math.pi*2
-            l_bound = [0, 0, 0, 0, 0, 0, 0, 0, 0]
+            l_bound = [-0.5, -0.5, -0.5, -10, -0.1, -10, -0.1, -math.pi*6, -math.pi*6]#[0, 0, 0, 0, 0, 0, 0, 0, 0]
             u_bound = [0.5, 0.5, 0.5, 10, 0.1, 10, 0.1, math.pi*6, math.pi*6]
             self.particles[:, :9] = np.clip(self.particles[:, :9], l_bound, u_bound)
 
@@ -1925,8 +1950,8 @@ class motion_estimation:
             plt.scatter(x_data, y_data, label='Particles', color=colour, alpha=(weights/np.max(weights)))
 
         def show_plot(self):
-            plt.xlim(0.25, 0.45)
-            plt.ylim(0.2, 0.4)
+            plt.xlim(self.window_limits[0], self.window_limits[1])
+            plt.ylim(self.window_limits[2], self.window_limits[3])
             plt.xlabel('X')
             plt.ylabel('Y')
             plt.title('Particle Positions')
